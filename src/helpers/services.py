@@ -21,6 +21,7 @@ class Services:
     checkpointer: Any          # MongoCheckpointer
     agent_graph: Any           # compiled LangGraph
     notification_engine: Optional[Any] = None
+    usage: Optional[Any] = None             # UsageMeter: counts usage per user and enforces the daily ceiling
     scheduler: Optional[Any] = None
 
 

@@ -4,6 +4,7 @@ import logging
 
 from helpers.config import Settings
 from stores.llm.LLMProviderFactory import LLMProviderFactory
+from stores.llm.MeteredLLM import MeteredLLM
 from stores.llm.templates.template_parser import TemplateParser
 from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 
@@ -18,17 +19,22 @@ async def _close_quietly(name: str, close):
         logger.warning(f"Failed to close {name}", exc_info=True)
 
 
-def open_clients(settings: Settings, stack: AsyncExitStack):
+def open_clients(settings: Settings, stack: AsyncExitStack, meter=None):
     """Create the generation and embedding clients, connect the vector database and load the templates.
-    Each is released when `stack` closes. Returns (generation, embedding, vectordb, template_parser)."""
+    Each is released when `stack` closes. Returns (generation, embedding, vectordb, template_parser).
+    With a usage `meter`, both model clients count every call against the user it is for and stop at their daily ceiling."""
     llm_factory = LLMProviderFactory(settings)
     generation_client = llm_factory.create(provider=settings.GENERATION_BACKEND)
     generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
+    if meter is not None:
+        generation_client = MeteredLLM(generation_client, meter)
     stack.push_async_callback(lambda: _close_quietly("the generation client", generation_client.aclose))
 
     embedding_client = llm_factory.create(provider=settings.EMBEDDING_BACKEND)
     embedding_client.set_embedding_model(
         model_id=settings.EMBEDDING_MODEL_ID, embedding_size=settings.EMBEDDING_MODEL_SIZE)
+    if meter is not None:
+        embedding_client = MeteredLLM(embedding_client, meter)
     stack.push_async_callback(lambda: _close_quietly("the embedding client", embedding_client.aclose))
 
     vectordb_client = VectorDBProviderFactory(settings).create(provider=settings.VECTOR_DB_BACKEND)

@@ -118,6 +118,19 @@ class Settings(BaseSettings):
     JOB_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=10)
     JOB_RETENTION_DAYS: int = Field(default=7, ge=1)           # finished jobs are deleted after this
 
+    # Safety limits and usage metering. Metering is "shadow" for now: real usage per user is recorded (to learn what a
+    # user costs) and only safety limits are enforced, never plan limits (those come with billing, after the gate).
+    USAGE_METERING: str = "shadow"
+    CHAT_MAX_PER_MINUTE: int = Field(default=20, ge=1)             # chat messages per user
+    ACTION_MAX_PER_MINUTE: int = Field(default=10, ge=1)           # approvals / rejections of actions per user
+    VOICE_MAX_PER_MINUTE: int = Field(default=10, ge=1)            # speech-to-text and text-to-speech per user
+    USER_DAILY_COST_CEILING_USD: float = Field(default=1.0, gt=0)  # estimated model spend per user per UTC day
+    # What the estimate assumes. These are placeholders to replace with real invoices; the free tier costs $0 today.
+    LLM_COST_PER_1K_INPUT_TOKENS_USD: float = Field(default=0.0005, ge=0)
+    LLM_COST_PER_1K_OUTPUT_TOKENS_USD: float = Field(default=0.0015, ge=0)
+    EMBEDDING_COST_PER_1K_TOKENS_USD: float = Field(default=0.0001, ge=0)
+    TRANSCRIPTION_COST_PER_MINUTE_USD: float = Field(default=0.0007, ge=0)   # about $0.04 per audio hour (hosted Whisper)
+
     # Sign-in / sign-up throttling (counted in MongoDB, so it holds across workers)
     LOGIN_WINDOW_MINUTES: int = Field(default=15, ge=1)
     LOGIN_MAX_FAILURES_PER_ACCOUNT: int = Field(default=5, ge=1)   # per email + client address
@@ -289,6 +302,8 @@ class Settings(BaseSettings):
             found.append("COOKIE_SAMESITE=none only works with COOKIE_SECURE=true (browsers drop such cookies)")
         if self.FRONTEND_URL.startswith("https://") and not self.COOKIE_SECURE:
             found.append("FRONTEND_URL is https, so COOKIE_SECURE should be true (cookies would also travel over plain http)")
+        if self.USAGE_METERING != "shadow":
+            found.append("USAGE_METERING must be 'shadow': plan limits are not built yet, so metering only records usage")
         if self.JOB_WORKER_MODE not in ("embedded", "external"):
             found.append("JOB_WORKER_MODE must be 'embedded' or 'external'")
         if bool(self.VAPID_PUBLIC_KEY) != bool(self.VAPID_PRIVATE_KEY):

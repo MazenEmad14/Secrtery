@@ -29,12 +29,12 @@ def public_message_for(exc: BaseException) -> str:
     return GENERIC_MESSAGE
 
 
-def _json(status_code: int, message: str, code: str) -> JSONResponse:
+def _json(status_code: int, message: str, code: str, headers: dict = None) -> JSONResponse:
     content = {"detail": message, "code": code}
     request_id = request_id_var.get()
     if request_id:
         content["request_id"] = request_id  # what a user quotes to support; it finds the log lines
-    return JSONResponse(status_code=status_code, content=content)
+    return JSONResponse(status_code=status_code, content=content, headers=headers)
 
 
 def install_error_handlers(app: FastAPI) -> None:
@@ -42,7 +42,9 @@ def install_error_handlers(app: FastAPI) -> None:
     async def handle_domain_error(request: Request, exc: DomainError):
         level = logging.WARNING if exc.status_code < 500 else logging.ERROR
         logger.log(level, f"{exc.code} on {request.method} {request.url.path}: {exc}", exc_info=exc.status_code >= 500)
-        return _json(exc.status_code, exc.public_message, exc.code)
+        retry_after = getattr(exc, "retry_after", None)
+        return _json(exc.status_code, exc.public_message, exc.code,
+                     headers={"Retry-After": str(retry_after)} if retry_after else None)
 
     @app.exception_handler(PyMongoError)
     async def handle_database_error(request: Request, exc: PyMongoError):

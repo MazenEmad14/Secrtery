@@ -21,10 +21,11 @@ from helpers.logging_setup import RequestContextMiddleware, configure_logging
 from helpers.services import Services
 from models.UserModel import UserModel
 from models.indexes import ensure_all_indexes
-from routes import actions as action_routes, agent as agent_routes, auth, base, dashboard, data, health, jobs, local_auth, nlp, notifications
+from routes import usage as usage_routes, actions as action_routes, agent as agent_routes, auth, base, dashboard, data, health, jobs, local_auth, nlp, notifications
 from models.JobModel import JobModel
 from services.jobs import SCAN_DUE_REMINDERS, JobWorker
 from services.notification_engine import NotificationEngine
+from services.usage import UsageMeter
 from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
 
 logger = logging.getLogger("uvicorn.error")
@@ -62,7 +63,8 @@ async def lifespan(app: FastAPI):
         await UserModel(mongo_db).protect_stored_tokens()  # no Google token stays in the clear or under a retired key
 
         # 3. LLM clients, the vector database and the prompt templates
-        generation_client, embedding_client, vectordb_client, template_parser = open_clients(settings, stack)
+        meter = UsageMeter(mongo_db, settings)
+        generation_client, embedding_client, vectordb_client, template_parser = open_clients(settings, stack, meter)
 
         # 5. The agent, with a persistent checkpointer so pending approvals and chat history
         # survive restarts.
@@ -88,6 +90,7 @@ async def lifespan(app: FastAPI):
             template_parser=template_parser,
             checkpointer=checkpointer,
             agent_graph=agent_graph,
+            usage=meter,
         )
 
         # 6. Background work
@@ -144,6 +147,7 @@ app.include_router(data.data_router)
 app.include_router(jobs.jobs_router)
 app.include_router(notifications.notifications_router)
 app.include_router(action_routes.actions_router)
+app.include_router(usage_routes.usage_router)
 app.include_router(nlp.nlp_router)
 app.include_router(agent_routes.agent_router)
 app.include_router(dashboard.dashboard_router)

@@ -145,6 +145,27 @@ mini-RAG-APP/ (NexusAI Workspace)
 vector collection, tasks, reminders, time zone and background jobs. A project name sent by a client is only a
 name: the server scopes it to the signed-in user, so users cannot read or overwrite each other's data.
 
+## Safety limits and usage metering
+
+Metering is in **shadow** mode (`USAGE_METERING=shadow`): the app records what each user uses and enforces only
+safety limits, never plan limits (those arrive with billing).
+
+- **Usage** is stored per user per UTC day in the `usage` collection: chat and approval requests, model calls,
+  estimated input/output/embedding tokens, transcription seconds, WhatsApp messages and an estimated cost. Every
+  model call is counted, wherever it comes from (chat, background jobs, the inbox check, the daily summary).
+  Users read their own numbers at `GET /api/v1/usage`; `python scripts/usage_report.py --days 30` lists everyone.
+- **Costs are estimates.** Tokens are estimated from text length (about 3 characters per token, on the high side) and
+  priced with `LLM_COST_PER_1K_*_TOKENS_USD`, `EMBEDDING_COST_PER_1K_TOKENS_USD` and
+  `TRANSCRIPTION_COST_PER_MINUTE_USD`. Those prices are placeholders: replace them with real invoices. Hidden
+  reasoning tokens are not visible, so real usage can be higher. The free tier costs nothing today.
+- **Daily ceiling:** a user whose estimated spend reaches `USER_DAILY_COST_CEILING_USD` in a UTC day has AI features
+  paused until midnight UTC, with a clear message. Reminders, notifications and saved data keep working. A call that
+  starts just below the line can finish above it, so the ceiling can be exceeded by one call.
+- **Rate limits** per user per minute: `CHAT_MAX_PER_MINUTE` (chat), `ACTION_MAX_PER_MINUTE` (approving or
+  rejecting actions), `VOICE_MAX_PER_MINUTE` (speech to text and back). Over the limit the API answers `429` with
+  `Retry-After`. If the usage database cannot be read, the ceiling lets the call through and logs an error rather
+  than stopping chat.
+
 ## The audit log of approved actions
 
 Sending an email, creating a calendar event, saving a reminder and saving to Drive each need the user's approval, and

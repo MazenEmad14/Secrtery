@@ -8,6 +8,7 @@ from helpers.llm_json import llm_json
 from helpers.prompts import render
 from models.UserModel import UserModel
 from services.notifier import notify
+from services.usage import as_user
 from stores.gmail.GmailService import GmailService
 
 logger = logging.getLogger("uvicorn.error")
@@ -84,7 +85,8 @@ async def evaluate_inbox_and_notify(services):
 
     for user in users:
         try:
-            await _evaluate_user(services, user)
+            with as_user(user["user_id"]):   # the model calls of this check are this user's
+                await _evaluate_user(services, user)
         except Exception as exc:
             # One user's expired token or API error must not stop the others.
             logger.warning(f"Proactive check failed for user {user['user_id']}: {exc}")

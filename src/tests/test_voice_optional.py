@@ -19,6 +19,8 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(agent_routes.agent_router)
     app.dependency_overrides[get_current_user] = lambda: {"_id": "u1", "email": "a@example.com"}
+    app.dependency_overrides[agent_routes.voice_limit] = lambda: None     # the limit has its own tests (test_usage.py)
+    app.state.services = SimpleNamespace(usage=None)
     monkeypatch.setattr(agent_routes, "_whisper_model", None)
     return TestClient(app, raise_server_exceptions=False)
 
@@ -38,7 +40,7 @@ def test_the_model_is_loaded_on_first_use_only_and_once(client, monkeypatch):
 
     class FakeModel:
         def transcribe(self, path):
-            return {"text": "hello world"}
+            return {"text": "hello world", "segments": [{"end": 2.5}]}
 
     fake_whisper = SimpleNamespace(load_model=lambda name: loads.append(name) or FakeModel())
     monkeypatch.setattr(agent_routes, "whisper", fake_whisper)

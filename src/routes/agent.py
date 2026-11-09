@@ -14,6 +14,7 @@ import io
 import hmac
 from helpers.config import get_settings
 from helpers.services import services_of
+from helpers.rate_limits import action_limit, chat_limit, voice_limit
 from helpers.event_bus import issue_ticket, redeem_ticket
 from helpers.auth_utils import get_current_user
 from models.ActionLogModel import ActionLogModel
@@ -174,7 +175,7 @@ agent_router = APIRouter(
 )
 
 
-@agent_router.post("/chat", response_model=ChatResponse)
+@agent_router.post("/chat", response_model=ChatResponse, dependencies=[Depends(chat_limit)])
 async def chat_endpoint(request: Request, chat_request: ChatRequest, current_user: dict = Depends(get_current_user)):
     """
     Main endpoint for the Secretary AI Agent.
@@ -246,7 +247,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
             thread_id=chat_request.thread_id
         )
 
-@agent_router.post("/resume", response_model=ChatResponse)
+@agent_router.post("/resume", response_model=ChatResponse, dependencies=[Depends(action_limit)])
 async def resume_endpoint(request: Request, resume_request: ResumeRequest, current_user: dict = Depends(get_current_user)):
     """
     Endpoint to resume or cancel an interrupted graph execution (HITL Approval).
@@ -420,11 +421,14 @@ def _get_whisper_model():
         return _whisper_model
 
 
-def _transcribe(path: str) -> str:
-    return _get_whisper_model().transcribe(path)["text"]
+def _transcribe(path: str) -> tuple[str, float]:
+    """The text and how many seconds of speech it covered (what hosted speech-to-text bills for)."""
+    result = _get_whisper_model().transcribe(path)
+    segments = result.get("segments") or []
+    return result["text"], float(segments[-1]["end"]) if segments else 0.0
 
 
-@agent_router.post("/stt")
+@agent_router.post("/stt", dependencies=[Depends(voice_limit)])
 async def stt_endpoint(request: Request, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     """
     Endpoint to convert speech to text using local Whisper.
@@ -442,9 +446,13 @@ async def stt_endpoint(request: Request, file: UploadFile = File(...), current_u
             tmp_path = tmp.name
 
         try:
-            text = await asyncio.to_thread(_transcribe, tmp_path)
+            text, seconds = await asyncio.to_thread(_transcribe, tmp_path)
         finally:
             os.remove(tmp_path)
+
+        meter = services_of(request).usage
+        if meter is not None:
+            await meter.record_transcription(str(current_user["_id"]), seconds)
 
         return {"text": text}
     except FfmpegMissing:
@@ -459,7 +467,7 @@ async def stt_endpoint(request: Request, file: UploadFile = File(...), current_u
         logger.error("Error in STT endpoint", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "Speech transcription failed"})
 
-@agent_router.post("/tts")
+@agent_router.post("/tts", dependencies=[Depends(voice_limit)])
 async def tts_endpoint(request: Request, tts_request: TTSRequest, current_user: dict = Depends(get_current_user)):
     """
     Endpoint to convert text to speech using local gTTS.
@@ -530,7 +538,7 @@ async def notifications_endpoint(request: Request, ticket: str):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-@agent_router.post("/chat/stream")
+@agent_router.post("/chat/stream", dependencies=[Depends(chat_limit)])
 async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, current_user: dict = Depends(get_current_user)):
     """
     Streaming endpoint for the Secretary AI Agent using LangGraph astream_events.

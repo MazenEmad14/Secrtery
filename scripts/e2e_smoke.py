@@ -245,6 +245,33 @@ def step_channels(alice: Api, bob: Api) -> None:
           any("Test notification" in n["title"] for _, n in seen))
 
 
+def step_usage_and_limits(alice: Api, bob: Api) -> None:
+    mine = alice.call("GET", "/api/v1/usage").json()
+    today = mine["today"]
+    check("usage: the model calls of the chat are counted for the user",
+          today["llm_calls"] >= 1 and today["input_tokens"] > 0 and today["output_tokens"] > 0, f"today={today}")
+    check("usage: chat and approvals are counted", today["chat_requests"] >= 2 and today["action_requests"] >= 2,
+          f"today={today}")
+    check("usage: the knowledge-base embeddings are counted", today["embedding_tokens"] > 0, f"today={today}")
+    check("usage: the estimated cost and the daily ceiling are shown",
+          0 < mine["daily_ceiling_usd"] and 0 <= mine["ceiling_used_fraction"] < 1 and not mine["paused"], f"{mine}")
+    check("usage: the second user's numbers are their own",
+          bob.call("GET", "/api/v1/usage").json()["today"]["llm_calls"] == 0)
+
+    # A burst of chat requests with an empty body: they are refused as invalid, but each still counts toward the
+    # per-user limit, so this reaches it without spending any model calls.
+    statuses = [alice.call("POST", "/api/v1/agent/chat", json={}).status_code for _ in range(30)]
+    over = alice.call("POST", "/api/v1/agent/chat", json={})
+    check("limits: chatting too fast is stopped with 429", 429 in statuses and over.status_code == 429,
+          f"statuses={sorted(set(statuses))}")
+    check("limits: the answer says how long to wait", over.headers.get("Retry-After", "").isdigit()
+          and "too quickly" in over.json().get("detail", ""), f"{over.headers.get('Retry-After')} {over.text[:150]}")
+    check("limits: another user is not affected",
+          bob.call("POST", "/api/v1/agent/chat", json={}).status_code == 422)
+    check("limits: reminders and notifications keep working while chat is limited",
+          alice.call("GET", "/api/v1/notifications").status_code == 200)
+
+
 def step_isolation(alice: Api, bob: Api, alice_notification_id, code: str) -> None:
     check("isolation: the second user sees no notifications of the first",
           bob.call("GET", "/api/v1/notifications").json()["notifications"] == [])
@@ -300,6 +327,7 @@ def main() -> int:
     step_rejection(alice, bob)
     step_channels(alice, bob)
     step_isolation(alice, bob, notification_id, code)
+    step_usage_and_limits(alice, bob)
     step_sign_out(args.base, alice)
 
     failed = [r for r in results if r[0] == "FAIL"]

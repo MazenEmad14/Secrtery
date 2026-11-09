@@ -7,6 +7,7 @@ from helpers.timezones import local_now
 from models.UserModel import UserModel
 from services.daily_summary import DailySummaryService
 from services.notifier import notify
+from services.usage import as_user
 from stores.calendar.CalendarService import CalendarService
 from stores.gmail.GmailService import GmailService
 
@@ -75,6 +76,10 @@ class NotificationEngine:
 
     async def _generate_for_user(self, user: dict):
         user_id = user["user_id"]
+        with as_user(user_id):   # the summary's model calls are this user's
+            await self._generate_summary(user, user_id)
+
+    async def _generate_summary(self, user: dict, user_id: str):
         try:
             gmail, calendar, refreshed = await asyncio.to_thread(_build_clients, user["google_token"])
             if refreshed and refreshed != user["google_token"]:

@@ -19,6 +19,7 @@ from helpers.config import get_settings
 from helpers.logging_setup import configure_logging
 from models.indexes import ensure_all_indexes
 from services.jobs import JobContext, JobWorker
+from services.usage import UsageMeter
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -34,7 +35,7 @@ async def main() -> None:
         db = mongo_conn[settings.MONGODB_DATABASE]
         await ensure_all_indexes(db)
 
-        generation, embedding, vectordb, templates = open_clients(settings, stack)
+        generation, embedding, vectordb, templates = open_clients(settings, stack, UsageMeter(db, settings))
         worker = JobWorker(JobContext(db, generation, embedding, vectordb, templates), db, settings)
 
         loop = asyncio.get_running_loop()

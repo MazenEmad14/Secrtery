@@ -18,6 +18,7 @@ from helpers.exceptions import DomainError
 from models.JobModel import JobModel
 from services.documents import Outcome, index_project_chunks, process_project_files
 from services.reminders import scan_due_reminders
+from services.usage import as_user
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -141,7 +142,8 @@ class JobWorker:
         async def progress(done: int, total: int) -> None:
             await self.jobs.set_progress(job_id, self.worker_id, done, total)
 
-        work = asyncio.create_task(handler(self.context, job, progress))
+        with as_user(job.get("user_id", "")):   # its model calls count against this user and stop at their ceiling
+            work = asyncio.create_task(handler(self.context, job, progress))
         beat = asyncio.create_task(self._keep_lease(job_id, work))
         try:
             result = await work

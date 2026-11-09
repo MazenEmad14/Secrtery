@@ -85,6 +85,34 @@ class LLMOutputError(DomainError):
         self.raw = raw
 
 
+class UsageLimitReached(LLMUnavailable):
+    """The user's daily AI allowance (a safety limit, not a plan) is used up. Only AI work pauses."""
+
+    status_code = 429
+    code = "daily_limit_reached"
+    default_message = ("You've reached today's usage limit for the assistant, so AI features are paused until "
+                       "midnight UTC. Your reminders, notifications and saved data are not affected.")
+
+    @property
+    def public_message(self) -> str:
+        return self.default_message
+
+
+class RateLimitExceeded(DomainError):
+    """The user is sending requests faster than the safety limit allows."""
+
+    status_code = 429
+    code = "rate_limited"
+
+    def __init__(self, what: str = "requests", retry_after: int = 60):
+        super().__init__(f"Too many {what}")
+        self.what, self.retry_after = what, max(1, int(retry_after))
+
+    @property
+    def public_message(self) -> str:
+        return f"You're sending {self.what} too quickly. Please wait {self.retry_after} seconds and try again."
+
+
 class ExternalServiceError(DomainError):
     """A service we depend on (Google, a search API) failed."""
 

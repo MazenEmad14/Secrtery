@@ -458,6 +458,8 @@ def chat_client(monkeypatch):
         app.include_router(agent_routes.agent_router)
         app.dependency_overrides[agent_routes.get_current_user] = lambda: {"_id": "u1", "email": "a@example.com"}
         app.state.services = SimpleNamespace(mongo_db=MagicMock(), agent_graph=RaisingGraph(error))
+        # The per-user rate limit has its own tests (test_usage.py); here it would only need a real database.
+        app.dependency_overrides[agent_routes.chat_limit] = lambda: None
         return TestClient(app, raise_server_exceptions=False)
 
     return make
