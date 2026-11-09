@@ -455,6 +455,32 @@ export async function signOut() {
   }
 }
 
+/* ──────────────────── Account: verification, export, deletion ──────────────────── */
+
+/** Confirm an email address with the token from the emailed link. */
+export async function verifyEmail(token) {
+  return request('/api/v1/auth/local/verify-email', { method: 'POST', body: JSON.stringify({ token }), retries: 0 });
+}
+
+/** Send the signed-in user a new verification link. */
+export async function resendVerification() {
+  return request('/api/v1/auth/local/resend-verification', { method: 'POST', retries: 0 });
+}
+
+/** Everything the app keeps about the user, as a ZIP (a Blob). */
+export async function exportMyData() {
+  return request('/api/v1/account/export', { responseType: 'blob', retries: 0 });
+}
+
+/** Permanently delete the account. Proof is the password, or the email address for an account without one. */
+export async function deleteMyAccount({ password, confirmEmail }) {
+  const result = await request('/api/v1/account/delete', {
+    method: 'POST', body: JSON.stringify({ password: password || null, confirm_email: confirmEmail || null }), retries: 0,
+  });
+  client.clearSession();
+  return result;
+}
+
 /* ──────────────────── Health Check ──────────────────── */
 
 export async function healthCheck() {

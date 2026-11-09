@@ -269,6 +269,12 @@ export default function WorkspacePage() {
     };
   }, []);
 
+  /* ── remind people who have not confirmed their email address (once per visit) ── */
+  useEffect(() => {
+    if (user && user.email_verified === false) showInfo('Please confirm your email address: we sent you a link. You can ask for a new one in Settings.');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email]);
+
   /* ── tell the server our time zone (once per browser) ── */
   useEffect(() => { syncTimezone(); }, []);
 

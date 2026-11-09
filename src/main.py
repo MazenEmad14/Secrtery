@@ -21,7 +21,7 @@ from helpers.logging_setup import RequestContextMiddleware, configure_logging
 from helpers.services import Services
 from models.UserModel import UserModel
 from models.indexes import ensure_all_indexes
-from routes import usage as usage_routes, actions as action_routes, agent as agent_routes, auth, base, dashboard, data, health, jobs, local_auth, nlp, notifications
+from routes import account as account_routes, usage as usage_routes, actions as action_routes, agent as agent_routes, auth, base, dashboard, data, health, jobs, local_auth, nlp, notifications
 from models.JobModel import JobModel
 from services.jobs import SCAN_DUE_REMINDERS, JobWorker
 from services.notification_engine import NotificationEngine
@@ -148,6 +148,7 @@ app.include_router(jobs.jobs_router)
 app.include_router(notifications.notifications_router)
 app.include_router(action_routes.actions_router)
 app.include_router(usage_routes.usage_router)
+app.include_router(account_routes.account_router)
 app.include_router(nlp.nlp_router)
 app.include_router(agent_routes.agent_router)
 app.include_router(dashboard.dashboard_router)

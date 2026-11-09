@@ -110,7 +110,8 @@ class RateLimitExceeded(DomainError):
 
     @property
     def public_message(self) -> str:
-        return f"You're sending {self.what} too quickly. Please wait {self.retry_after} seconds and try again."
+        wait = f"{self.retry_after} seconds" if self.retry_after < 120 else f"{(self.retry_after + 59) // 60} minutes"
+        return f"You're sending {self.what} too quickly. Please wait {wait} and try again."
 
 
 class ExternalServiceError(DomainError):

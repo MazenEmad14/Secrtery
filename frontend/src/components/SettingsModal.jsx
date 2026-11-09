@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, User, Globe, Mail, Calendar, HardDrive, LogOut, Trash2, Link2, Unlink, Bell, BellRing, History } from 'lucide-react';
+import { X, User, Globe, Mail, Calendar, HardDrive, LogOut, Trash2, Link2, Unlink, Bell, BellRing, History, Download, ShieldCheck } from 'lucide-react';
 
 import { useAuth } from '../hooks/useAuth';
 import {
-  disconnectGoogle, fetchActionLog, getGoogleAuthUrl, getNotificationPreferences, sendTestNotification,
+  deleteMyAccount, disconnectGoogle, exportMyData, fetchActionLog, resendVerification, getGoogleAuthUrl, getNotificationPreferences, sendTestNotification,
   setNotificationPreferences, updateTimezone,
 } from '../services/api';
 import { actionKind, actionSummary, statusLabel } from '../services/actionLog';
@@ -51,6 +51,9 @@ export default function SettingsModal({ open, onClose, googleConnected, googleSe
   const [channels, setChannels] = useState(null);       // what the server says: { push, email, push_available, email_available }
   const [browserPush, setBrowserPush] = useState(false); // is *this* browser subscribed
   const [savingChannel, setSavingChannel] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteProof, setDeleteProof] = useState('');     // the password, or the email address for an account without a password
   const [activity, setActivity] = useState(null);       // the user's action log: null while loading, [] when empty, 'error'
 
   useEffect(() => {
@@ -122,6 +125,8 @@ export default function SettingsModal({ open, onClose, googleConnected, googleSe
     if (!open) return undefined;
     setZone(user?.timezone || browserZone());
     setConfirmClear(false);
+    setConfirmDelete(false);
+    setDeleteProof('');
     const onKey = (event) => { if (event.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -161,6 +166,54 @@ export default function SettingsModal({ open, onClose, googleConnected, googleSe
       showError(err?.message || 'Could not disconnect Google.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const sendVerification = async () => {
+    setAccountBusy(true);
+    try {
+      const result = await resendVerification();
+      if (result?.already_verified) showSuccess('Your email is already confirmed.');
+      else showSuccess('A new confirmation link was sent.');
+    } catch (err) {
+      showError(err?.message || 'Could not send the link.');
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const downloadData = async () => {
+    setAccountBusy(true);
+    try {
+      const blob = await exportMyData();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `nexusai-export-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showSuccess('Your data was downloaded.');
+    } catch (err) {
+      showError(err?.message || 'Could not export your data.');
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const deleteAccount = async () => {
+    setAccountBusy(true);
+    try {
+      const result = await deleteMyAccount(user?.has_password === false ? { confirmEmail: deleteProof } : { password: deleteProof });
+      if (result?.google_access === 'failed') {
+        window.alert('Your account was deleted, but Google could not be reached to cancel access. You can remove NexusAI at myaccount.google.com/permissions.');
+      }
+      try { await signOut(); } catch { /* the account is gone: this browser forgets the session anyway */ }
+      window.location.assign('/');
+    } catch (err) {
+      showError(err?.message || 'Could not delete the account.');
+      setAccountBusy(false);
     }
   };
 
@@ -338,6 +391,59 @@ export default function SettingsModal({ open, onClose, googleConnected, googleSe
                     </button>
                   )}
                 </div>
+              </div>
+            </section>
+
+            {/* Account: verification, export, deletion */}
+            <section className="mb-5">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-white/30 mb-2">Your data</p>
+              <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-3 space-y-3">
+                <div className="flex items-center gap-2.5 text-sm text-white/60">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Email address</span>
+                  {user?.email_verified ? (
+                    <span className="ml-auto text-xs text-emerald-400/80">Confirmed</span>
+                  ) : (
+                    <button onClick={sendVerification} disabled={accountBusy}
+                      className="ml-auto text-xs text-amber-300/90 underline bg-transparent border-none cursor-pointer disabled:opacity-50">
+                      Not confirmed: send the link again
+                    </button>
+                  )}
+                </div>
+                <button onClick={downloadData} disabled={accountBusy}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80 hover:bg-white/10 cursor-pointer disabled:opacity-50">
+                  <Download className="w-4 h-4" /> Download all my data (ZIP)
+                </button>
+                <p className="m-0 text-xs text-white/30">Your account details, reminders, tasks, activity, conversations and the documents you uploaded. Passwords and Google tokens are never included.</p>
+
+                {!confirmDelete ? (
+                  <button onClick={() => setConfirmDelete(true)} disabled={accountBusy}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-red-400/20 bg-red-500/5 px-3 py-2 text-sm text-red-300/80 hover:bg-red-500/10 cursor-pointer disabled:opacity-50">
+                    <Trash2 className="w-4 h-4" /> Delete my account…
+                  </button>
+                ) : (
+                  <div className="rounded-lg border border-red-400/30 bg-red-500/5 p-3 space-y-2">
+                    <p className="m-0 text-xs text-red-200/80">
+                      This permanently deletes your account and everything in it: documents, reminders, tasks, conversations and
+                      history. It also cancels the app's access to your Google account. It cannot be undone.
+                    </p>
+                    <input type="password" value={deleteProof} onChange={(event) => setDeleteProof(event.target.value)}
+                      aria-label={user?.has_password === false ? 'Your email address' : 'Your password'}
+                      placeholder={user?.has_password === false ? 'Type your email address to confirm' : 'Enter your password to confirm'}
+                      autoComplete="current-password"
+                      className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none" />
+                    <div className="flex gap-2">
+                      <button onClick={() => { setConfirmDelete(false); setDeleteProof(''); }} disabled={accountBusy}
+                        className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/70 cursor-pointer disabled:opacity-50">
+                        Cancel
+                      </button>
+                      <button onClick={deleteAccount} disabled={accountBusy || !deleteProof}
+                        className="flex-1 rounded-lg border border-red-400/40 bg-red-500/20 px-3 py-2 text-sm font-semibold text-red-100 cursor-pointer disabled:opacity-50">
+                        Delete everything
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
 

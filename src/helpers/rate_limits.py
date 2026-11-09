@@ -18,17 +18,17 @@ from models.RateLimitModel import RateLimitModel
 WINDOW_SECONDS = 60
 
 
-def per_user_limit(bucket: str, setting_name: str, what: str, count_as: str = ""):
-    """A route dependency: at most `setting_name` requests a minute per user in this bucket."""
+def per_user_limit(bucket: str, setting_name: str, what: str, count_as: str = "", window_seconds: int = WINDOW_SECONDS):
+    """A route dependency: at most `setting_name` requests per window (a minute unless told otherwise) per user in this bucket."""
 
     async def dependency(request: Request, current_user: dict = Depends(get_current_user)) -> None:
         services = services_of(request)
         user_id = str(current_user["_id"])
         limits = RateLimitModel(services.mongo_db)
         key = f"{bucket}:{user_id}"
-        if await limits.hit(key, WINDOW_SECONDS) > getattr(get_settings(), setting_name):
+        if await limits.hit(key, window_seconds) > getattr(get_settings(), setting_name):
             _, ends = await limits.status(key)
-            wait = math.ceil((ends - datetime.utcnow()).total_seconds()) if ends else WINDOW_SECONDS
+            wait = math.ceil((ends - datetime.utcnow()).total_seconds()) if ends else window_seconds
             raise RateLimitExceeded(what, retry_after=wait)
         meter = getattr(services, "usage", None)
         if meter is not None and count_as:

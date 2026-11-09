@@ -145,6 +145,20 @@ mini-RAG-APP/ (NexusAI Workspace)
 vector collection, tasks, reminders, time zone and background jobs. A project name sent by a client is only a
 name: the server scopes it to the signed-in user, so users cannot read or overwrite each other's data.
 
+## Account deletion, export and email verification
+
+- **Delete account** (Settings > Your data, or `POST /api/v1/account/delete`): asks for the password (or the email address
+  for a Google-only account), cancels the app's access at Google, signs the user out everywhere and removes everything
+  they own: projects, vectors, uploaded files, documents, conversations, notifications, the action log, usage and
+  rate-limit counters. It can be repeated if interrupted. `python scripts/verify_account_deleted.py USER_ID --email
+  user@example.com` searches the whole database, the upload folders and the vector store and exits 0 only if nothing
+  is left. A test fails when a new collection exists that the deletion code does not know about.
+- **Export** (`GET /api/v1/account/export`): a ZIP with `export.json` and the user's uploaded files. Passwords, Google
+  tokens and the search index are never included.
+- **Email verification:** password sign-ups get a link (valid `EMAIL_VERIFICATION_HOURS`); Google sign-ups are verified
+  already. There is no email provider yet (`EMAIL_DELIVERY=log` writes the link to the server log, development only), so
+  `REQUIRE_EMAIL_VERIFICATION` is refused until one is added. Existing accounts count as unconfirmed.
+
 ## Safety limits and usage metering
 
 Metering is in **shadow** mode (`USAGE_METERING=shadow`): the app records what each user uses and enforces only

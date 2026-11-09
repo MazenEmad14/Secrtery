@@ -131,6 +131,13 @@ class Settings(BaseSettings):
     EMBEDDING_COST_PER_1K_TOKENS_USD: float = Field(default=0.0001, ge=0)
     TRANSCRIPTION_COST_PER_MINUTE_USD: float = Field(default=0.0007, ge=0)   # about $0.04 per audio hour (hosted Whisper)
 
+    # Accounts: email verification, export and deletion
+    EMAIL_DELIVERY: str = "log"                    # how the app emails users who have no Gmail linked: "log" = write the link to the server log (development only)
+    EMAIL_VERIFICATION_HOURS: int = Field(default=24, ge=1)      # a verification link works this long
+    REQUIRE_EMAIL_VERIFICATION: bool = False       # true: unverified accounts can only verify, sign out, export or delete. Needs a real email channel.
+    ACCOUNT_EXPORT_MAX_PER_HOUR: int = Field(default=3, ge=1)
+    ACCOUNT_DELETE_MAX_PER_HOUR: int = Field(default=5, ge=1)    # attempts, successful or not (guards the password check)
+
     # Sign-in / sign-up throttling (counted in MongoDB, so it holds across workers)
     LOGIN_WINDOW_MINUTES: int = Field(default=15, ge=1)
     LOGIN_MAX_FAILURES_PER_ACCOUNT: int = Field(default=5, ge=1)   # per email + client address
@@ -302,6 +309,10 @@ class Settings(BaseSettings):
             found.append("COOKIE_SAMESITE=none only works with COOKIE_SECURE=true (browsers drop such cookies)")
         if self.FRONTEND_URL.startswith("https://") and not self.COOKIE_SECURE:
             found.append("FRONTEND_URL is https, so COOKIE_SECURE should be true (cookies would also travel over plain http)")
+        if self.EMAIL_DELIVERY != "log":
+            found.append("EMAIL_DELIVERY must be 'log': no email provider is wired in yet (the link is written to the server log)")
+        if self.REQUIRE_EMAIL_VERIFICATION and self.EMAIL_DELIVERY == "log":
+            found.append("REQUIRE_EMAIL_VERIFICATION needs a real email channel: with EMAIL_DELIVERY=log users could not receive the link")
         if self.USAGE_METERING != "shadow":
             found.append("USAGE_METERING must be 'shadow': plan limits are not built yet, so metering only records usage")
         if self.JOB_WORKER_MODE not in ("embedded", "external"):

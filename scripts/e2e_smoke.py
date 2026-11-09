@@ -19,10 +19,16 @@ deletion does not exist yet (PR 0.6). Exit code is 0 only if nothing FAILed. It 
 so it proves nothing about real Google accounts.
 """
 import argparse
+import os
+import io
 import json
+import re
+import subprocess
+import zipfile
 import secrets
 import sys
 import threading
+from pathlib import Path
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -30,6 +36,12 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 results: list[tuple[str, str, str]] = []
+LOG_START = [0]   # size of the server log when this run began
+
+
+def squash(text: str) -> str:
+    """Letters and digits only, lower case: the model may re-capitalise or space out a marker we put in a request."""
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
 def record(status: str, name: str, detail: str = "") -> bool:
@@ -125,13 +137,13 @@ def step_reminder(alice: Api, wait_extra: int) -> None:
         "thread_id": body["thread_id"], "approve": True, "resume_token": body["metadata"].get("resume_token")})
     check("approval: approving the same action again does nothing", not replay.ok, f"HTTP {replay.status_code}")
     saved = [r for r in alice.call("GET", "/api/v1/reminders").json().get("data", {}).get("reminders", [])
-             if marker in r.get("task", "")]
+             if marker in squash(r.get("task", ""))]
     check("approval: exactly one reminder was saved", len(saved) == 1, f"{len(saved)} reminders")
     log = alice.call("GET", "/api/v1/actions/log").json()["actions"]
     row = next((r for r in log if r["action_id"] == body["metadata"].get("action_id")), None)
     check("audit log: the action shows proposed, approved by you and done, with the reminder id",
           row is not None and row["status"] == "done" and row["action_type"] == "save_reminder"
-          and row["decided_at"] and row["executed_at"] and row["result_id"] and marker in str(row["summary"]),
+          and row["decided_at"] and row["executed_at"] and row["result_id"] and marker in squash(str(row["summary"])),
           f"row={row}")
 
     # Delivery: wait until due + 60 s (the acceptance limit), watching both the stream and the REST list.
@@ -139,8 +151,8 @@ def step_reminder(alice: Api, wait_extra: int) -> None:
     delivered = None
     while time.time() < deadline + 1:
         listed = alice.call("GET", "/api/v1/notifications").json().get("notifications", [])
-        delivered = next((n for n in listed if marker in n["title"]), None)
-        if delivered and any(marker in n["title"] for _, n in seen):
+        delivered = next((n for n in listed if marker in squash(n["title"])), None)
+        if delivered and any(marker in squash(n["title"]) for _, n in seen):
             break
         time.sleep(2)
     stop.set()
@@ -149,7 +161,7 @@ def step_reminder(alice: Api, wait_extra: int) -> None:
     if not check("delivery: the reminder is stored as a notification", delivered is not None,
                  "no notification appeared before the deadline"):
         return
-    streamed = [(at, n) for at, n in seen if marker in n["title"]]
+    streamed = [(at, n) for at, n in seen if marker in squash(n["title"])]
     check("delivery: it arrives on the live stream", bool(streamed), "; ".join(errors) or "no SSE event received")
     # The server stamps the notification when the scan creates it: that is the delivery time.
     created = datetime.fromisoformat(delivered["created_at"].rstrip("Z")).replace(tzinfo=timezone.utc)
@@ -160,12 +172,12 @@ def step_reminder(alice: Api, wait_extra: int) -> None:
         record("INFO", "stream delay", f"web app received it {streamed[0][0] - due.timestamp():.1f}s after the due time")
 
     time.sleep(25)  # more than one scan interval: it must not come twice
-    again = [n for n in alice.call("GET", "/api/v1/notifications").json()["notifications"] if marker in n["title"]]
+    again = [n for n in alice.call("GET", "/api/v1/notifications").json()["notifications"] if marker in squash(n["title"])]
     check("delivery: exactly once", len(again) == 1, f"{len(again)} copies")
 
     read = alice.call("POST", f"/api/v1/notifications/{delivered['id']}/read")
     unread = alice.call("GET", "/api/v1/notifications", params={"unread_only": "true"}).json()["notifications"]
-    check("notification can be marked read", read.ok and all(marker not in n["title"] for n in unread))
+    check("notification can be marked read", read.ok and all(marker not in squash(n["title"]) for n in unread))
     return delivered["id"]
 
 
@@ -200,7 +212,7 @@ def step_rejection(alice: Api, bob: Api) -> None:
         "thread_id": body["thread_id"], "approve": False, "resume_token": body["metadata"].get("resume_token")})
     check("rejection: the user can say no", no.ok and no.json().get("status") == "rejected", f"HTTP {no.status_code}")
     saved = [r for r in alice.call("GET", "/api/v1/reminders").json().get("data", {}).get("reminders", [])
-             if marker in r.get("task", "")]
+             if marker in squash(r.get("task", ""))]
     check("rejection: nothing was saved", saved == [], f"{len(saved)} reminders")
     log = alice.call("GET", "/api/v1/actions/log").json()["actions"]
     row = next((r for r in log if r["action_id"] == body["metadata"].get("action_id")), None)
@@ -272,6 +284,69 @@ def step_usage_and_limits(alice: Api, bob: Api) -> None:
           alice.call("GET", "/api/v1/notifications").status_code == 200)
 
 
+def step_email_verification(alice: Api, server_log: str) -> None:
+    check("verification: a new password account starts unconfirmed",
+          alice.call("GET", "/api/v1/auth/local/me").json()["user"]["email_verified"] is False)
+    check("verification: a confirmed-looking token that was never issued is refused",
+          alice.call("POST", "/api/v1/auth/local/verify-email", json={"token": "x" * 40}).status_code == 400)
+    if not server_log:
+        record("SKIP", "verification: the emailed link", "pass --server-log with the file the server writes to (development logs the link)")
+        return
+    with open(server_log, "rb") as handle:       # only what the server wrote since this run began; alice signed up first
+        handle.seek(LOG_START[0])
+        text = handle.read().decode("utf-8", errors="replace")
+    links = re.findall(r"verify-email\?token=([A-Za-z0-9_\-]+)", text)
+    if not check("verification: the link was written to the server log", bool(links), "no link in the log"):
+        return
+    token = links[0]
+    done = alice.call("POST", "/api/v1/auth/local/verify-email", json={"token": token})
+    check("verification: the link confirms the address", done.ok and done.json() == {"verified": True}, f"HTTP {done.status_code}")
+    check("verification: it is now confirmed", alice.call("GET", "/api/v1/auth/local/me").json()["user"]["email_verified"] is True)
+    check("verification: the link works only once",
+          alice.call("POST", "/api/v1/auth/local/verify-email", json={"token": token}).status_code == 400)
+
+
+def step_export(alice: Api) -> None:
+    response = alice.call("GET", "/api/v1/account/export")
+    if not check("export: a ZIP is returned", response.ok and response.headers.get("content-type") == "application/zip",
+                 f"HTTP {response.status_code}"):
+        return
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    data = json.loads(archive.read("nexusai-export/export.json"))
+    names = archive.namelist()
+    check("export: it holds the user's reminders, knowledge-base file and account details",
+          data["account"]["email"] == alice.email and any(squash(r["task"]).startswith("smoke") for r in data["reminders"])
+          and any(n.endswith("handbook.txt") for n in names), f"names={names}")
+    blob = response.content + b"".join(archive.read(n) for n in names)
+    check("export: no password hash or Google token is included", b"password_hash" not in blob and b"google_token" not in blob)
+
+
+def step_delete_account(base: str, wait_extra: int) -> None:
+    carol = Api(base, "c")
+    if not check("account deletion: a throwaway user signs up", carol.sign_up().ok):
+        return
+    carol.call("POST", "/api/v1/data/upload/default", files={"file": ("secret-notes.txt", b"carol private notes " * 5, "text/plain")})
+    carol.call("POST", "/api/v1/notifications/test")
+    carol.call("PUT", "/api/v1/auth/local/timezone", json={"timezone": "UTC"})
+    user_id = json.loads(zipfile.ZipFile(io.BytesIO(carol.call("GET", "/api/v1/account/export").content))
+                         .read("nexusai-export/export.json"))["account"]["id"]
+
+    wrong = carol.call("POST", "/api/v1/account/delete", json={"password": "not my password"})
+    check("account deletion: the wrong password deletes nothing", wrong.status_code == 403
+          and carol.call("GET", "/api/v1/auth/local/me").ok, f"HTTP {wrong.status_code}")
+    done = carol.call("POST", "/api/v1/account/delete", json={"password": carol.password})
+    check("account deletion: the right password deletes the account",
+          done.ok and done.json().get("deleted") is True, f"HTTP {done.status_code} {done.text[:150]}")
+    again = requests.post(base + "/api/v1/auth/local/signin", json={"email": carol.email, "password": carol.password}, timeout=60)
+    check("account deletion: signing in no longer works", again.status_code == 401, f"HTTP {again.status_code}")
+    check("account deletion: the old session no longer works", carol.call("GET", "/api/v1/auth/local/me").status_code == 401)
+
+    script = Path(__file__).resolve().parent / "verify_account_deleted.py"
+    result = subprocess.run([sys.executable, str(script), user_id, "--email", carol.email], capture_output=True, text=True, timeout=300)
+    check("account deletion: verify_account_deleted.py finds nothing left of the user",
+          result.returncode == 0 and "Clean" in result.stdout, (result.stdout + result.stderr)[-400:])
+
+
 def step_isolation(alice: Api, bob: Api, alice_notification_id, code: str) -> None:
     check("isolation: the second user sees no notifications of the first",
           bob.call("GET", "/api/v1/notifications").json()["notifications"] == [])
@@ -306,6 +381,8 @@ def step_sign_out(base: str, api: Api) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", default="http://localhost:5000")
+    parser.add_argument("--server-log", default="",
+                        help="the file the server writes its log to; development logs the verification link there")
     parser.add_argument("--wait-extra", type=int, default=30,
                         help="seconds to keep waiting after the 60-second delivery limit before giving up")
     args = parser.parse_args()
@@ -316,6 +393,8 @@ def main() -> int:
         print(f"The backend is not reachable at {args.base}: {exc}")
         return 2
 
+    if args.server_log:
+        LOG_START[0] = os.path.getsize(args.server_log)
     alice, bob = Api(args.base, "a"), Api(args.base, "b")
     for user in (alice, bob):
         response = user.sign_up()
@@ -328,6 +407,9 @@ def main() -> int:
     step_channels(alice, bob)
     step_isolation(alice, bob, notification_id, code)
     step_usage_and_limits(alice, bob)
+    step_email_verification(alice, args.server_log)
+    step_export(alice)
+    step_delete_account(args.base, args.wait_extra)
     step_sign_out(args.base, alice)
 
     failed = [r for r in results if r[0] == "FAIL"]

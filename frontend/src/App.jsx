@@ -4,6 +4,7 @@ import { AuthProvider, RequireAuth } from './hooks/useAuth'
 import LandingPage from './pages/LandingPage'
 import AuthPage from './pages/AuthPage'
 import WorkspacePage from './pages/WorkspacePage'
+import VerifyEmailPage from './pages/VerifyEmailPage'
 
 function App() {
   return (
@@ -12,6 +13,7 @@ function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/auth" element={<AuthPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
           <Route path="/workspace" element={<RequireAuth><WorkspacePage /></RequireAuth>} />
         </Routes>
       </AnimatePresence>

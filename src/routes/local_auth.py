@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 from datetime import datetime
 
@@ -19,6 +20,7 @@ from models.RateLimitModel import RateLimitModel
 from models.SessionModel import SessionModel
 from models.UserModel import UserModel
 from models.db_schemes.user import User
+from services.mailer import send_verification_email
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -44,6 +46,12 @@ class SignInRequest(BaseModel):
 
 class TimezoneRequest(BaseModel):
     timezone: str = Field(max_length=64)
+
+
+def login_key_for(email: str) -> str:
+    """The email part of the sign-in throttle key. It is a hash, so the throttle table never holds an address (a
+    stranger typing someone's address would otherwise leave it there), and it can still be found to delete."""
+    return hashlib.sha256(email.encode("utf-8")).hexdigest()[:32]
 
 
 def _client_ip(request: Request) -> str:
@@ -110,18 +118,61 @@ async def signup(request: Request, response: Response, body: SignUpRequest):
     await user_model.create_user(new_user)
 
     created = await user_model.get_user_by_email(email)
+    await _send_verification(user_model, created)
     token, csrf = await start_session(response, services_of(request).mongo_db, str(created["_id"]), email)
 
     return {
         "access_token": token,  # for API clients; browsers use the httpOnly cookies set above
         "token_type": "bearer",
         "csrf_token": csrf,
-        "user": {
-            "name": name,
-            "email": email,
-            "is_google_connected": False
-        }
+        "user": _public_user(created, email, False),
     }
+
+
+async def _send_verification(user_model: UserModel, user: dict) -> bool:
+    """Email the user a link to confirm their address. Never fails the request: a user whose email could not be
+    sent can ask for another from Settings."""
+    settings = get_settings()
+    try:
+        raw = await user_model.start_email_verification(str(user["_id"]), settings.EMAIL_VERIFICATION_HOURS)
+        send_verification_email(settings, user["email"], raw)
+        return True
+    except Exception:
+        logger.error("Could not send the email verification link", exc_info=True)
+        return False
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(min_length=10, max_length=200)
+
+
+@local_auth_router.post("/verify-email")
+async def verify_email(request: Request, body: VerifyEmailRequest):
+    """Confirm an address with the token from the emailed link. The token is the credential, so this needs no sign-in
+    (the link is often opened on another device). It is a POST so a mail scanner that opens links cannot verify."""
+    limits = await RateLimitModel.create_instance(services_of(request).mongo_db)
+    key = f"verify-ip:{_client_ip(request)}"
+    if await limits.hit(key, window_seconds=3600) > 30:
+        _, ends = await limits.status(key)
+        raise _too_many(ends, "verification attempts")
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
+    if await user_model.confirm_email(body.token) is None:
+        raise HTTPException(status_code=400, detail="This link is not valid or has expired. Ask for a new one in Settings.")
+    return {"verified": True}
+
+
+@local_auth_router.post("/resend-verification")
+async def resend_verification(request: Request, current_user: dict = Depends(auth_utils.get_current_user)):
+    """Send the signed-in user a new verification link (three an hour)."""
+    if current_user.get("email_verified") is True:
+        return {"already_verified": True}
+    limits = await RateLimitModel.create_instance(services_of(request).mongo_db)
+    key = f"verify-resend:{current_user['_id']}"
+    if await limits.hit(key, window_seconds=3600) > 3:
+        _, ends = await limits.status(key)
+        raise _too_many(ends, "verification emails")
+    user_model = await UserModel.create_instance(services_of(request).mongo_db)
+    return {"sent": await _send_verification(user_model, current_user)}
 
 
 @local_auth_router.post("/signin")
@@ -130,7 +181,7 @@ async def signin(request: Request, response: Response, body: SignInRequest):
     window = settings.LOGIN_WINDOW_MINUTES * 60
     email = auth_utils.normalize_email(str(body.email))
     ip = _client_ip(request)
-    ip_key, account_key = f"login-ip:{ip}", f"login:{email}:{ip}"
+    ip_key, account_key = f"login-ip:{ip}", f"login:{login_key_for(email)}:{ip}"
 
     limits = await RateLimitModel.create_instance(services_of(request).mongo_db)
 
@@ -182,6 +233,8 @@ def _public_user(user_data: dict, email: str, is_google_connected: bool) -> dict
         "email": email,
         "is_google_connected": is_google_connected,
         "timezone": user_data.get("timezone"),
+        "email_verified": user_data.get("email_verified") is True,
+        "has_password": bool(user_data.get("password_hash")),   # a Google-only account confirms deletion with its address
     }
 
 

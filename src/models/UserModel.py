@@ -1,13 +1,19 @@
 from models.BaseDataModel import BaseDataModel
 from models.db_schemes.user import User
 from typing import Optional, Dict, Any
+import hashlib
 import logging
+import secrets
 from pymongo.errors import DuplicateKeyError
 
 from helpers.exceptions import EmailAlreadyRegistered
 from helpers.privacy import mask_email
 from helpers import token_crypto
 from helpers.token_crypto import encrypt_token, decrypt_token
+
+
+def _hash(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _normalize(email: str) -> str:
@@ -58,7 +64,8 @@ class UserModel(BaseDataModel):
 
     async def create_google_user(self, name: str, email: str, google_sub: str) -> dict:
         """A new account created by Google sign-in: no password, identified by Google's account id."""
-        await self.create_user(User(name=name, email=email, google_sub=google_sub, is_google_connected=True))
+        await self.create_user(User(name=name, email=email, google_sub=google_sub, is_google_connected=True,
+                                    email_verified=True))   # Google already verified the address
         return await self.get_user_by_email(email)
 
     async def update_google_auth_status(self, email: str, status: bool) -> bool:
@@ -84,6 +91,30 @@ class UserModel(BaseDataModel):
             {"email": _normalize(email)}, {"$set": {"timezone": timezone_name}}
         )
         return result.matched_count > 0
+
+    # ── email verification ───────────────────────────────────────────────────
+    async def start_email_verification(self, user_id: str, hours: int) -> str:
+        """Make a one-time verification token for the user (replacing any earlier one) and return the raw value.
+        Only its hash is stored, so a copy of the database cannot verify anyone."""
+        from datetime import datetime, timedelta
+
+        from bson import ObjectId
+
+        raw = secrets.token_urlsafe(32)
+        await self.collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"email_verification": {"token_hash": _hash(raw), "expires_at": datetime.utcnow() + timedelta(hours=hours),
+                                             "sent_at": datetime.utcnow()}}})
+        return raw
+
+    async def confirm_email(self, raw: str) -> Optional[dict]:
+        """Mark the address of whoever holds this token as verified; None if the token is wrong, used or expired."""
+        from datetime import datetime
+
+        user = await self.collection.find_one_and_update(
+            {"email_verification.token_hash": _hash(raw or ""), "email_verification.expires_at": {"$gt": datetime.utcnow()}},
+            {"$set": {"email_verified": True}, "$unset": {"email_verification": ""}})
+        return user
 
     async def protect_stored_tokens(self) -> dict:
         """Make sure no Google token is stored in the clear or under an old key. Safe to run on every startup.

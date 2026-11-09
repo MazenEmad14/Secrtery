@@ -83,6 +83,10 @@ def enforce_csrf(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CSRF token missing or invalid")
 
 
+# Routes an account with an unconfirmed address may still use when REQUIRE_EMAIL_VERIFICATION is on.
+EMAIL_VERIFICATION_EXEMPT_PREFIXES = ("/api/v1/auth/local/", "/api/v1/account")
+
+
 async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials = Security(security)):
     """The signed-in user. A Bearer token (API clients) wins; otherwise the httpOnly session cookie (browsers)."""
     token = credentials.credentials if credentials else None
@@ -110,5 +114,11 @@ async def get_current_user(request: Request, credentials: HTTPAuthorizationCrede
         raise HTTPException(status_code=401, detail="User not found")
 
     user_id_var.set(str(user_data["_id"]))  # on every log line written for the rest of this request
+
+    # With REQUIRE_EMAIL_VERIFICATION an unconfirmed account can only confirm, sign out, export or delete itself.
+    if (get_settings().REQUIRE_EMAIL_VERIFICATION and user_data.get("email_verified") is not True
+            and not request.url.path.startswith(EMAIL_VERIFICATION_EXEMPT_PREFIXES)):
+        raise HTTPException(status_code=403, detail="Please confirm your email address first. We sent you a link; "
+                                                    "you can ask for a new one in Settings.")
 
     return user_data

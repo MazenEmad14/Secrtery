@@ -26,3 +26,9 @@ def redeem_ticket(ticket: str) -> Optional[str]:
     if entry is None or entry[1] < time.time():
         return None
     return entry[0]
+
+
+def forget_user(user_id: str) -> None:
+    """Drop the user's unused stream tickets (account deletion)."""
+    for ticket in [t for t, (owner, _) in _tickets.items() if owner == user_id]:
+        del _tickets[ticket]
