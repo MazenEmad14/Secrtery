@@ -59,6 +59,7 @@ async def lifespan(app: FastAPI):
         mongo_db = mongo_conn[settings.MONGODB_DATABASE]
         await ensure_all_indexes(mongo_db)
         await UserModel(mongo_db).normalize_existing_emails()
+        await UserModel(mongo_db).protect_stored_tokens()  # no Google token stays in the clear or under a retired key
 
         # 3. LLM clients, the vector database and the prompt templates
         generation_client, embedding_client, vectordb_client, template_parser = open_clients(settings, stack)

@@ -6,6 +6,7 @@ from pymongo.errors import DuplicateKeyError
 
 from helpers.exceptions import EmailAlreadyRegistered
 from helpers.privacy import mask_email
+from helpers import token_crypto
 from helpers.token_crypto import encrypt_token, decrypt_token
 
 
@@ -83,6 +84,41 @@ class UserModel(BaseDataModel):
             {"email": _normalize(email)}, {"$set": {"timezone": timezone_name}}
         )
         return result.matched_count > 0
+
+    async def protect_stored_tokens(self) -> dict:
+        """Make sure no Google token is stored in the clear or under an old key. Safe to run on every startup.
+
+        - plaintext tokens (from before encryption was mandatory) are encrypted;
+        - tokens under a retired key (TOKEN_ENCRYPTION_OLD_KEYS) are re-encrypted with the current key;
+        - tokens no configured key can read are counted and left alone: those users must reconnect Google.
+
+        Each update only applies if the stored value is still the one that was read, so a token refreshed by a
+        request at the same moment is never overwritten with an older copy. Returns counts, never token content.
+        """
+        counts = {"encrypted": 0, "rotated": 0, "unreadable": 0}
+        cursor = self.collection.find({"google_token": {"$exists": True, "$nin": [None, {}]}}, {"google_token": 1})
+        async for doc in cursor:
+            stored = doc["google_token"]
+            if not token_crypto.is_encrypted(stored):
+                changed = await self.collection.update_one(
+                    {"_id": doc["_id"], "google_token": stored}, {"$set": {"google_token": encrypt_token(stored)}})
+                counts["encrypted"] += changed.modified_count
+            elif not token_crypto.under_primary_key(stored):
+                renewed = token_crypto.rotate(stored)
+                if renewed is None:
+                    counts["unreadable"] += 1
+                    continue
+                changed = await self.collection.update_one(
+                    {"_id": doc["_id"], "google_token": stored}, {"$set": {"google_token": renewed}})
+                counts["rotated"] += changed.modified_count
+        if counts["encrypted"] or counts["rotated"]:
+            logger.info(f"Google tokens protected at startup: {counts['encrypted']} encrypted, {counts['rotated']} moved to the current key")
+        if counts["unreadable"]:
+            logger.error(
+                f"{counts['unreadable']} stored Google token(s) cannot be read with the configured keys "
+                "(TOKEN_ENCRYPTION_KEY / TOKEN_ENCRYPTION_OLD_KEYS). Those users must reconnect Google, "
+                "or restore the key that encrypted them.")
+        return counts
 
     async def get_notification_prefs(self, user_id: str) -> dict:
         """Which optional channels the user switched on. The web app always gets the notification."""

@@ -83,7 +83,8 @@ class Settings(BaseSettings):
     COOKIE_SAMESITE: str = "lax"                   # lax | strict | none (none needs COOKIE_SECURE)
     COOKIE_DOMAIN: Optional[str] = None            # only for a frontend and API on sibling sub-domains
     REFRESH_MAX_PER_IP_PER_MINUTE: int = Field(default=30, ge=1)
-    TOKEN_ENCRYPTION_KEY: Optional[str] = None     # encrypts stored Google tokens when set
+    TOKEN_ENCRYPTION_KEY: Optional[str] = None     # REQUIRED: encrypts the stored Google tokens (a Fernet key)
+    TOKEN_ENCRYPTION_OLD_KEYS: Optional[str] = None  # key rotation: previous keys, comma separated, decrypt-only
     # Web Push (optional channel): a VAPID key pair identifies this server to the browsers' push services.
     VAPID_PUBLIC_KEY: Optional[str] = None
     VAPID_PRIVATE_KEY: Optional[str] = None
@@ -126,7 +127,7 @@ class Settings(BaseSettings):
     # ── field-level checks ───────────────────────────────────────────────────
     @field_validator(
         "GENERATION_MODEL_ID", "EMBEDDING_MODEL_ID", "EMBEDDING_MODEL_SIZE", "OPENAI_API_KEY", "OPENAI_API_URL",
-        "COHERE_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "TOKEN_ENCRYPTION_KEY", "GOOGLE_SEARCH_API_KEY",
+        "COHERE_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_OLD_KEYS", "GOOGLE_SEARCH_API_KEY",
         "GOOGLE_SEARCH_CX", "COOKIE_DOMAIN", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", mode="before",
     )
     @classmethod
@@ -264,13 +265,25 @@ class Settings(BaseSettings):
             if getattr(self, name) not in languages:
                 found.append(f"{name}={getattr(self, name)!r} has no prompt templates (available: {', '.join(sorted(languages))})")
 
-        if self.TOKEN_ENCRYPTION_KEY:
-            try:
-                from cryptography.fernet import Fernet
+        generate = 'python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+        if not self.TOKEN_ENCRYPTION_KEY:
+            found.append(f"TOKEN_ENCRYPTION_KEY must be set (it encrypts the stored Google tokens). Generate one with: {generate}")
+        else:
+            from cryptography.fernet import Fernet
 
+            try:
                 Fernet(self.TOKEN_ENCRYPTION_KEY.encode())
             except Exception:
-                found.append("TOKEN_ENCRYPTION_KEY is not a valid Fernet key (generate one with Fernet.generate_key())")
+                found.append(f"TOKEN_ENCRYPTION_KEY is not a valid Fernet key. Generate one with: {generate}")
+        for old in (self.TOKEN_ENCRYPTION_OLD_KEYS or "").replace(" ", "").split(","):
+            if old:
+                from cryptography.fernet import Fernet
+
+                try:
+                    Fernet(old.encode())
+                except Exception:
+                    found.append("TOKEN_ENCRYPTION_OLD_KEYS must hold valid Fernet keys separated by commas")
+                    break
 
         if self.COOKIE_SAMESITE == "none" and not self.COOKIE_SECURE:
             found.append("COOKIE_SAMESITE=none only works with COOKIE_SECURE=true (browsers drop such cookies)")

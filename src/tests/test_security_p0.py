@@ -205,7 +205,7 @@ def test_token_encryption_round_trip_and_legacy_plaintext(monkeypatch):
     from helpers import token_crypto
 
     key = Fernet.generate_key().decode()
-    monkeypatch.setattr(token_crypto, "get_settings", lambda: SimpleNamespace(TOKEN_ENCRYPTION_KEY=key))
+    monkeypatch.setattr(token_crypto, "get_settings", lambda: SimpleNamespace(TOKEN_ENCRYPTION_KEY=key, TOKEN_ENCRYPTION_OLD_KEYS=None))
     token = {"refresh_token": "r", "client_id": "c"}
     stored = token_crypto.encrypt_token(token)
     assert "refresh_token" not in stored

@@ -114,6 +114,16 @@ mini-RAG-APP/ (NexusAI Workspace)
 
    Update `src/.env` with your API keys, MongoDB URI, and preferred models.
 
+   **`TOKEN_ENCRYPTION_KEY` is required.** It encrypts the Google tokens stored in MongoDB, and the app refuses to
+   start without it. Generate one and put it in `src/.env`:
+
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+
+   Back the key up with your other secrets: a token encrypted with a lost key cannot be read (the user would
+   reconnect Google). Tokens saved before encryption was mandatory are encrypted automatically at the next start.
+
    The app checks the settings when it starts and refuses to run with a clear list of anything missing or
    inconsistent (for example no API key for the chosen model backend). Names in `.env` that match no setting
    are reported as probable typos. Every setting is documented in `src/.env.example`.
@@ -129,11 +139,27 @@ mini-RAG-APP/ (NexusAI Workspace)
    `GOOGLE_REDIRECT_URI` (default `http://localhost:5000/api/v1/auth/google/callback`) as an authorised redirect
    URI, download the client file as `src/credentials.json`, and list your frontend origin in `CORS_ORIGINS`.
    Each user connects their own Google account from the app; their token is stored with their account
-   (encrypted when `TOKEN_ENCRYPTION_KEY` is set). There is no shared `token.json`.
+   (always encrypted with `TOKEN_ENCRYPTION_KEY`). There is no shared `token.json`.
 
 **The multi-user model.** Every user has their own account, session, Google connection, projects, uploaded files,
 vector collection, tasks, reminders, time zone and background jobs. A project name sent by a client is only a
 name: the server scopes it to the signed-in user, so users cannot read or overwrite each other's data.
+
+## Rotating the token encryption key
+
+Rotate when the key may have leaked, or on a schedule. Nobody is signed out and no one reconnects Google.
+
+1. Generate a new key (command above).
+2. In `src/.env`, put the **new** key in `TOKEN_ENCRYPTION_KEY` and the **previous** key in `TOKEN_ENCRYPTION_OLD_KEYS`
+   (several old keys are separated by commas).
+3. Restart the app. At startup every stored token that is still under an old key is re-encrypted with the new one,
+   and the log says how many were moved (counts only, never token content). If it reports tokens that "cannot be
+   read", they were encrypted with a key that is in neither setting: add that key to `TOKEN_ENCRYPTION_OLD_KEYS`
+   or have those users reconnect Google.
+4. When a restart reports nothing left to move, remove `TOKEN_ENCRYPTION_OLD_KEYS` and restart again. A leaked old
+   key is then useless against the database.
+
+With `JOB_WORKER_MODE=external` and several processes, restart the API first (it migrates), then the others.
 
 ## Logs and health
 
