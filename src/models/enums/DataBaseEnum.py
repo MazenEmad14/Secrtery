@@ -11,3 +11,4 @@ class DataBaseEnum(Enum):
     COLLECTION_EMAIL_NAME = "emails"
     COLLECTION_MEETING_NAME = "meetings"
     COLLECTION_REMINDER_NAME = "reminders"
+    COLLECTION_NOTIFICATION_NAME = "notifications"

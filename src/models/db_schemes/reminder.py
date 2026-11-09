@@ -14,6 +14,12 @@ class Reminder(BaseModel):
     user_id: str = Field(default="")
     project_id: str = Field(default="default")
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # When it is due, in UTC (worked out from date + time in the user's zone); None = not scheduled.
+    due_at: Optional[datetime] = None
+    # Set once the reminder has been turned into a notification, so it is never delivered twice.
+    delivered_at: Optional[datetime] = None
+    # True when date/time could not be turned into a moment (so the scan stops looking at it).
+    due_unparsed: bool = False
 
     class Config:
         arbitrary_types_allowed = True
@@ -29,6 +35,12 @@ class Reminder(BaseModel):
             {
                 "key": [("is_completed", 1), ("date", 1)],
                 "name": "reminder_status_date_index",
+                "unique": False
+            },
+            {
+                # the due-reminder scan: undelivered, not completed, due before now
+                "key": [("delivered_at", 1), ("is_completed", 1), ("due_at", 1)],
+                "name": "reminder_due_scan_index",
                 "unique": False
             }
         ]

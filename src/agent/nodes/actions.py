@@ -121,10 +121,13 @@ async def save_reminder_node(state: AgentState, deps: AgentDeps) -> AgentState:
     if db_client is not None:
         from models.ReminderModel import ReminderModel
         reminder_model = await ReminderModel.create_instance(db_client=db_client)
+        from services.reminders import compute_due_at
         reminder = Reminder(
             task=details.get("task", state["query"]),
             date=details.get("date", ""),
             time=details.get("time", ""),
+            # None (no usable date/time) leaves it unscheduled; the scan then marks it so it is not retried.
+            due_at=compute_due_at(details.get("date", ""), details.get("time", ""), state.get("user_timezone")),
             priority=details.get("priority", state.get("priority", "medium")),
             notes=details.get("notes", ""),
             project_id=state.get("project_id", "default"),

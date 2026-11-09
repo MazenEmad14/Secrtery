@@ -16,6 +16,7 @@ from helpers.config import get_settings
 from helpers.services import services_of
 from helpers.event_bus import get_user_queue, issue_ticket, redeem_ticket
 from helpers.auth_utils import get_current_user
+from models.NotificationModel import NotificationModel
 from models.UserModel import UserModel
 from helpers.error_handlers import public_message_for
 from helpers.google_context import set_google_token
@@ -477,6 +478,23 @@ async def notifications_endpoint(request: Request, ticket: str):
         return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": "Invalid or expired ticket"})
 
     queue = get_user_queue(user_id)
+    notifications = NotificationModel(services_of(request).mongo_db)
+    sent_ids: set = set()  # unread notifications already pushed on this stream (the client marks them read)
+
+    async def stored_notifications():
+        """Unread persistent notifications (reminders ...) not yet sent on this stream, oldest first.
+        On connect this also delivers what came due while the user was offline."""
+        try:
+            unread = await notifications.list_for_user(user_id, unread_only=True, limit=20)
+        except PyMongoError:
+            logger.error("Could not read notifications for the stream", exc_info=True)
+            return
+        for item in reversed(unread):
+            if item["_id"] in sent_ids:
+                continue
+            sent_ids.add(item["_id"])
+            payload = json.dumps(NotificationModel.public(item), ensure_ascii=False)
+            yield f"event: notification\ndata: {payload}\n\n"
 
     async def event_generator():
         while True:
@@ -487,10 +505,12 @@ async def notifications_endpoint(request: Request, ticket: str):
                 # JSON-encode so newlines in the message cannot break SSE framing.
                 yield f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
             except asyncio.TimeoutError:
-                continue
+                pass
             except Exception as e:
                 logger.error(f"Error in SSE generator: {e}")
                 break
+            async for chunk in stored_notifications():
+                yield chunk
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

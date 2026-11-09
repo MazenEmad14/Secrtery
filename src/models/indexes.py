@@ -6,6 +6,7 @@ from models.ChunkModel import ChunkModel
 from models.EmailModel import EmailModel
 from models.JobModel import JobModel
 from models.MeetingModel import MeetingModel
+from models.NotificationModel import NotificationModel
 from models.ProjectModel import ProjectModel
 from models.QueryModel import QueryModel
 from models.RateLimitModel import RateLimitModel
@@ -18,7 +19,7 @@ logger = logging.getLogger("uvicorn.error")
 
 ALL_MODELS = (
     ProjectModel, ChunkModel, AssetModel, QueryModel, EmailModel, MeetingModel,
-    ReminderModel, TaskModel, UserModel, RateLimitModel, SessionModel, JobModel,
+    ReminderModel, TaskModel, UserModel, RateLimitModel, SessionModel, JobModel, NotificationModel,
 )
 
 

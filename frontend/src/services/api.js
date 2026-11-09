@@ -344,6 +344,11 @@ export async function openNotificationStream() {
   return new EventSource(`${API_BASE}/api/v1/agent/notifications?ticket=${encodeURIComponent(ticket)}`);
 }
 
+/** Mark a stored notification (a reminder that came due ...) as read once it has been shown. */
+export async function markNotificationRead(id) {
+  await request(`/api/v1/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', retries: 0 });
+}
+
 /** Save the time zone the user picked in Settings. */
 export async function updateTimezone(zone) {
   await request('/api/v1/auth/local/timezone', { method: 'PUT', body: JSON.stringify({ timezone: zone }), retries: 0 });

@@ -52,6 +52,7 @@ import {
   transcribeAudio,
   generateSpeech,
   openNotificationStream,
+  markNotificationRead,
   syncTimezone
 } from '../services/api';
 
@@ -163,6 +164,7 @@ export default function WorkspacePage() {
   // said from the server, instead of showing an empty chat.
   const [loadingMessages, setLoadingMessages] = useState(false);
   const restoredSessions = useRef(new Set());
+  const shownNotifications = useRef(new Set());  // stored notifications already shown (a reconnect resends unread ones)
   useEffect(() => {
     if (!activeSessionId || restoredSessions.current.has(activeSessionId)) return undefined;
     const sessionId = activeSessionId;
@@ -303,6 +305,27 @@ export default function WorkspacePage() {
           autoPlayTTS: false
         }]);
       };
+
+      // Stored notifications (reminders that came due, also those missed while offline). Shown once, then
+      // marked read on the server so they do not come back.
+      eventSource.addEventListener('notification', (event) => {
+        let note;
+        try { note = JSON.parse(event.data); } catch { return; }
+        if (!note || shownNotifications.current.has(note.id)) return;
+        shownNotifications.current.add(note.id);
+
+        showInfo(note.title);
+        setMessages(prev => [...prev, {
+          id: Date.now() + Math.random(),
+          role: 'assistant',
+          content: note.body ? `${note.title}\n\n${note.body}` : note.title,
+          isProactive: true,
+          agents: [{ label: 'Reminder', icon: Bell, color: 'text-amber-400', bg: 'bg-amber-400/10' }],
+          autoPlayTTS: false
+        }]);
+        // If this fails the server resends it on the next connection; the set above stops a second copy.
+        markNotificationRead(note.id).catch(() => {});
+      });
 
       // A ticket is single-use, so a dropped stream needs a fresh ticket, not the
       // browser's automatic reconnect.

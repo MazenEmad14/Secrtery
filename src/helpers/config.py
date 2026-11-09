@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     DEFAULT_TIMEZONE: str = "Africa/Cairo"         # zone for users who have not set their own (IANA name)
     DAILY_SUMMARY_HOUR: int = Field(default=8, ge=0, le=23)           # the briefing goes out at this local hour
     INBOX_CHECK_INTERVAL_MINUTES: int = Field(default=1, ge=1)        # proactive check for urgent email
+    REMINDER_SCAN_SECONDS: int = Field(default=20, ge=5, le=55)       # how often due reminders are looked for (under 60 so none waits a minute)
     THREAD_RETENTION_DAYS: int = Field(default=30, ge=1)              # idle conversations are deleted after this
     WHISPER_MODEL: str = "base"                    # speech-to-text model size (only with requirements-voice.txt)
     LOG_FORMAT: str = "text"                       # "text" (readable) or "json" (one object per line)

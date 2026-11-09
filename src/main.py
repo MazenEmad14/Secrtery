@@ -21,12 +21,22 @@ from helpers.logging_setup import RequestContextMiddleware, configure_logging
 from helpers.services import Services
 from models.UserModel import UserModel
 from models.indexes import ensure_all_indexes
-from routes import agent as agent_routes, auth, base, dashboard, data, health, jobs, local_auth, nlp
-from services.jobs import JobWorker
+from routes import agent as agent_routes, auth, base, dashboard, data, health, jobs, local_auth, nlp, notifications
+from models.JobModel import JobModel
+from services.jobs import SCAN_DUE_REMINDERS, JobWorker
 from services.notification_engine import NotificationEngine
 from stores.checkpoint.MongoCheckpointer import MongoCheckpointer
 
 logger = logging.getLogger("uvicorn.error")
+
+
+async def enqueue_reminder_scan(db, max_attempts: int) -> None:
+    """Queue a due-reminder scan (a no-op while one is already queued or running). The job worker does the
+    scan, so it works with JOB_WORKER_MODE=external and with several workers."""
+    try:
+        await JobModel(db).enqueue(SCAN_DUE_REMINDERS, "system", "all", "all", {}, max_attempts)
+    except Exception:
+        logger.error("Could not queue the due-reminder scan", exc_info=True)
 
 
 @asynccontextmanager
@@ -88,6 +98,9 @@ async def lifespan(app: FastAPI):
         services.scheduler.add_job(
             evaluate_inbox_and_notify, "interval", minutes=settings.INBOX_CHECK_INTERVAL_MINUTES, args=[services])
         services.scheduler.add_job(
+            enqueue_reminder_scan, "interval", seconds=settings.REMINDER_SCAN_SECONDS,
+            args=[mongo_db, settings.JOB_MAX_ATTEMPTS])
+        services.scheduler.add_job(
             checkpointer.purge_stale_threads, "interval", hours=24, args=[settings.THREAD_RETENTION_DAYS])
         services.scheduler.start()
         stack.callback(services.scheduler.shutdown)
@@ -128,6 +141,7 @@ app.include_router(auth.auth_router)
 app.include_router(local_auth.local_auth_router)
 app.include_router(data.data_router)
 app.include_router(jobs.jobs_router)
+app.include_router(notifications.notifications_router)
 app.include_router(nlp.nlp_router)
 app.include_router(agent_routes.agent_router)
 app.include_router(dashboard.dashboard_router)

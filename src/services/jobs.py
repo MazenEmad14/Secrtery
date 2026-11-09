@@ -17,11 +17,13 @@ from helpers.config import Settings
 from helpers.exceptions import DomainError
 from models.JobModel import JobModel
 from services.documents import Outcome, index_project_chunks, process_project_files
+from services.reminders import scan_due_reminders
 
 logger = logging.getLogger("uvicorn.error")
 
 PROCESS_DOCUMENTS = "process_documents"
 INDEX_DOCUMENTS = "index_documents"
+SCAN_DUE_REMINDERS = "scan_due_reminders"
 
 GENERIC_ERROR = "The job failed. Try again, and quote the job id if it keeps failing."
 
@@ -67,7 +69,12 @@ async def handle_index_documents(context, job: dict, progress) -> dict:
         context, job["project_id"], job["payload"]["do_reset"], progress=progress))
 
 
+async def handle_scan_due_reminders(context, job: dict, progress) -> dict:
+    return await scan_due_reminders(context.mongo_db)
+
+
 HANDLERS: dict[str, Handler] = {
+    SCAN_DUE_REMINDERS: handle_scan_due_reminders,
     PROCESS_DOCUMENTS: handle_process_documents,
     INDEX_DOCUMENTS: handle_index_documents,
 }

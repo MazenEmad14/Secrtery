@@ -1,0 +1,240 @@
+"""End-to-end smoke test against a RUNNING local backend, with throwaway accounts.
+
+    python scripts/e2e_smoke.py [--base http://localhost:5000] [--wait-extra 60]
+
+Start the backend first (see CLAUDE.md, section 3). The script needs a working LLM and embedding key in
+src/.env (the chat and knowledge-base steps call them). It talks to the real HTTP API, nothing is mocked.
+
+What it checks (each line prints PASS / FAIL / SKIP):
+  1. two sign-ups (the second user proves isolation)
+  2. chat: a reminder request pauses for approval, the user approves, the reminder is saved
+  3. the reminder is delivered to the app as a notification (REST list and the SSE stream) within 60 seconds
+     of its due time, and is delivered once
+  4. knowledge base: upload, process, index and answer from the uploaded text
+  5. cross-user isolation: the second user sees none of the first user's notifications, jobs, reminders or documents
+  6. sign-out: the refresh token stops working
+
+It leaves the two throwaway accounts (email smoke-*@example.com) and their data in the database; account
+deletion does not exist yet (PR 0.6). Exit code is 0 only if nothing FAILed. It never touches Google or WhatsApp,
+so it proves nothing about real Google accounts.
+"""
+import argparse
+import json
+import secrets
+import sys
+import threading
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import requests
+
+results: list[tuple[str, str, str]] = []
+
+
+def record(status: str, name: str, detail: str = "") -> bool:
+    results.append((status, name, detail))
+    print(f"{status:5} {name}" + (f"  - {detail}" if detail else ""), flush=True)
+    return status == "PASS"
+
+
+def check(name: str, ok: bool, detail: str = "") -> bool:
+    return record("PASS" if ok else "FAIL", name, "" if ok else detail)
+
+
+class Api:
+    """One signed-in user, using the bearer token (API clients do not need the CSRF header)."""
+
+    def __init__(self, base: str, label: str):
+        self.base = base.rstrip("/")
+        self.label = label
+        self.email = f"smoke-{label}-{uuid.uuid4().hex[:8]}@example.com"
+        self.password = "Smk-" + secrets.token_urlsafe(14) + "9!"
+        self.http = requests.Session()
+        self.token = ""
+
+    def call(self, method: str, path: str, **kwargs) -> requests.Response:
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        kwargs.setdefault("timeout", 120)
+        return self.http.request(method, self.base + path, headers=headers, **kwargs)
+
+    def sign_up(self) -> requests.Response:
+        response = self.http.post(self.base + "/api/v1/auth/local/signup", timeout=60,
+                                  json={"name": f"Smoke {self.label}", "email": self.email, "password": self.password})
+        if response.ok:
+            self.token = response.json()["access_token"]
+        return response
+
+
+def stream_notifications(api: Api, seen: list, stop: threading.Event, errors: list) -> None:
+    """Read the SSE stream and collect the `notification` events (what the web app receives).
+
+    The stream is silent while nothing happens, so a read timeout is normal: reconnect with a fresh ticket
+    (tickets are single use), as the web app does. Unread notifications are sent again on a new stream."""
+    while not stop.is_set():
+        try:
+            ticket = api.call("POST", "/api/v1/agent/notifications/ticket").json()["ticket"]
+            with requests.get(f"{api.base}/api/v1/agent/notifications", params={"ticket": ticket},
+                              stream=True, timeout=(10, 8)) as response:
+                event = None
+                for raw in response.iter_lines(decode_unicode=True):
+                    if stop.is_set():
+                        return
+                    if raw.startswith("event:"):
+                        event = raw.split(":", 1)[1].strip()
+                    elif raw.startswith("data:") and event == "notification":
+                        seen.append((time.time(), json.loads(raw.split(":", 1)[1])))
+                        event = None
+        except requests.exceptions.RequestException:
+            continue  # idle timeout: reconnect
+        except Exception as exc:
+            errors.append(str(exc))
+            return
+
+
+def step_reminder(alice: Api, wait_extra: int) -> None:
+    marker = "smoke" + uuid.uuid4().hex[:6]
+    alice.call("PUT", "/api/v1/auth/local/timezone", json={"timezone": "UTC"})
+
+    seen: list = []
+    errors: list = []
+    stop = threading.Event()
+    thread = threading.Thread(target=stream_notifications, args=(alice, seen, stop, errors), daemon=True)
+    thread.start()
+
+    # Due at the next whole minute that is at least 30 seconds away (the app works in minutes).
+    due = (datetime.now(timezone.utc) + timedelta(seconds=30)).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    query = f"remind me to {marker} on {due:%Y-%m-%d} at {due:%H:%M}"
+    chat = alice.call("POST", "/api/v1/agent/chat", json={"query": query, "thread_id": "smoke" + marker})
+    body = chat.json() if chat.ok else {}
+    if not check("chat: a reminder request pauses for approval",
+                 chat.ok and body.get("status") == "pending_approval" and body.get("type") == "action:reminder",
+                 f"HTTP {chat.status_code}, status={body.get('status')!r}, type={body.get('type')!r}"):
+        stop.set()
+        return
+    details = body.get("action_details", {})
+    check("chat: the proposed reminder has the right date and time",
+          details.get("date") == f"{due:%Y-%m-%d}" and details.get("time") == f"{due:%H:%M}",
+          f"model proposed date={details.get('date')!r} time={details.get('time')!r}, wanted {due:%Y-%m-%d} {due:%H:%M}")
+
+    approve = alice.call("POST", "/api/v1/agent/resume", json={
+        "thread_id": body["thread_id"], "approve": True, "resume_token": body["metadata"].get("resume_token")})
+    check("approval: the reminder is saved", approve.ok and approve.json().get("status") == "success",
+          f"HTTP {approve.status_code} {approve.text[:200]}")
+
+    # Delivery: wait until due + 60 s (the acceptance limit), watching both the stream and the REST list.
+    deadline = due.timestamp() + 60 + wait_extra
+    delivered = None
+    while time.time() < deadline + 1:
+        listed = alice.call("GET", "/api/v1/notifications").json().get("notifications", [])
+        delivered = next((n for n in listed if marker in n["title"]), None)
+        if delivered and any(marker in n["title"] for _, n in seen):
+            break
+        time.sleep(2)
+    stop.set()
+    thread.join(timeout=10)
+
+    if not check("delivery: the reminder is stored as a notification", delivered is not None,
+                 "no notification appeared before the deadline"):
+        return
+    streamed = [(at, n) for at, n in seen if marker in n["title"]]
+    check("delivery: it arrives on the live stream", bool(streamed), "; ".join(errors) or "no SSE event received")
+    # The server stamps the notification when the scan creates it: that is the delivery time.
+    created = datetime.fromisoformat(delivered["created_at"].rstrip("Z")).replace(tzinfo=timezone.utc)
+    late = (created - due).total_seconds()
+    check("delivery: within 60 seconds of its due time", 0 <= late <= 60, f"{late:.0f}s after the due time")
+    record("INFO", "delivery delay", f"notification created {late:.1f}s after the due time")
+    if streamed:
+        record("INFO", "stream delay", f"web app received it {streamed[0][0] - due.timestamp():.1f}s after the due time")
+
+    time.sleep(25)  # more than one scan interval: it must not come twice
+    again = [n for n in alice.call("GET", "/api/v1/notifications").json()["notifications"] if marker in n["title"]]
+    check("delivery: exactly once", len(again) == 1, f"{len(again)} copies")
+
+    read = alice.call("POST", f"/api/v1/notifications/{delivered['id']}/read")
+    unread = alice.call("GET", "/api/v1/notifications", params={"unread_only": "true"}).json()["notifications"]
+    check("notification can be marked read", read.ok and all(marker not in n["title"] for n in unread))
+    return delivered["id"]
+
+
+def step_knowledge_base(alice: Api, bob: Api) -> str:
+    code = "vault-" + uuid.uuid4().hex[:8]
+    text = f"Company handbook.\nThe secret door code for the Zephyr office is {code}.\nLunch is at noon.\n"
+    upload = alice.call("POST", "/api/v1/data/upload/default",
+                        files={"file": ("handbook.txt", text.encode(), "text/plain")})
+    if not check("knowledge base: upload", upload.ok, f"HTTP {upload.status_code} {upload.text[:200]}"):
+        return code
+    file_id = upload.json()["file_id"]
+    process = alice.call("POST", "/api/v1/data/process/default", json={"file_id": file_id, "do_reset": True})
+    check("knowledge base: process into chunks", process.ok, f"HTTP {process.status_code} {process.text[:200]}")
+    index = alice.call("POST", "/api/v1/nlp/index/push/default", json={"do_reset": True})
+    check("knowledge base: index", index.ok, f"HTTP {index.status_code} {index.text[:200]}")
+    answer = alice.call("POST", "/api/v1/nlp/index/answer/default",
+                        json={"text": "What is the secret door code for the Zephyr office?", "limit": 3})
+    check("knowledge base: the answer contains the uploaded fact",
+          answer.ok and code in answer.json().get("answer", ""), f"HTTP {answer.status_code} {answer.text[:200]}")
+    return code
+
+
+def step_isolation(alice: Api, bob: Api, alice_notification_id, code: str) -> None:
+    check("isolation: the second user sees no notifications of the first",
+          bob.call("GET", "/api/v1/notifications").json()["notifications"] == [])
+    if alice_notification_id:
+        check("isolation: the second user cannot mark the first user's notification",
+              bob.call("POST", f"/api/v1/notifications/{alice_notification_id}/read").status_code == 404)
+    check("isolation: the second user sees no reminders of the first",
+          bob.call("GET", "/api/v1/reminders").json().get("data", {}).get("reminders") == [])
+    answer = bob.call("POST", "/api/v1/nlp/index/answer/default",
+                      json={"text": "What is the secret door code for the Zephyr office?", "limit": 3})
+    check("isolation: the second user's knowledge base does not contain the first user's document",
+          code not in (answer.text if answer.ok else ""), "the code leaked")
+    check("isolation: an unauthenticated request is refused",
+          requests.get(alice.base + "/api/v1/notifications", timeout=30).status_code == 401)
+
+
+def step_sign_out(base: str, api: Api) -> None:
+    session = requests.Session()
+    signin = session.post(base + "/api/v1/auth/local/signin", json={"email": api.email, "password": api.password},
+                          timeout=60)
+    if not check("sign-in with the password", signin.ok, f"HTTP {signin.status_code}"):
+        return
+    refresh_cookie = session.cookies.get("refresh_token", path="/api/v1/auth/local")
+    check("sign-in: a session cookie was set", refresh_cookie is not None)
+    out = session.post(base + "/api/v1/auth/local/signout", timeout=30)
+    check("sign-out", out.ok, f"HTTP {out.status_code}")
+    stale = requests.post(base + "/api/v1/auth/local/refresh", timeout=30,
+                          cookies={"refresh_token": refresh_cookie} if refresh_cookie else None)
+    check("sign-out: the old refresh token no longer works", stale.status_code == 401, f"HTTP {stale.status_code}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--base", default="http://localhost:5000")
+    parser.add_argument("--wait-extra", type=int, default=30,
+                        help="seconds to keep waiting after the 60-second delivery limit before giving up")
+    args = parser.parse_args()
+
+    try:
+        requests.get(args.base + "/health", timeout=10).raise_for_status()
+    except Exception as exc:
+        print(f"The backend is not reachable at {args.base}: {exc}")
+        return 2
+
+    alice, bob = Api(args.base, "a"), Api(args.base, "b")
+    for user in (alice, bob):
+        response = user.sign_up()
+        if not check(f"sign-up of user {user.label}", response.ok, f"HTTP {response.status_code} {response.text[:200]}"):
+            return 1
+
+    notification_id = step_reminder(alice, args.wait_extra)
+    code = step_knowledge_base(alice, bob)
+    step_isolation(alice, bob, notification_id, code)
+    step_sign_out(args.base, alice)
+
+    failed = [r for r in results if r[0] == "FAIL"]
+    print(f"\n{len([r for r in results if r[0] == 'PASS'])} passed, {len(failed)} failed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
