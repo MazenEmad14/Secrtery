@@ -176,6 +176,41 @@ def step_knowledge_base(alice: Api, bob: Api) -> str:
     return code
 
 
+def step_channels(alice: Api, bob: Api) -> None:
+    prefs = alice.call("GET", "/api/v1/notifications/preferences").json()
+    check("channels: optional channels are off by default", prefs["push"] is False and prefs["email"] is False)
+    no_google = alice.call("PUT", "/api/v1/notifications/preferences", json={"email": True})
+    check("channels: email-to-self is refused until Google is connected", no_google.status_code == 409,
+          f"HTTP {no_google.status_code}")
+    if prefs["push_available"]:
+        on = alice.call("PUT", "/api/v1/notifications/preferences", json={"push": True})
+        check("channels: push can be switched on (server has VAPID keys)", on.ok and on.json()["push"] is True)
+        check("channels: the preference is per user",
+              bob.call("GET", "/api/v1/notifications/preferences").json()["push"] is False)
+        alice.call("PUT", "/api/v1/notifications/preferences", json={"push": False})
+    else:
+        record("SKIP", "channels: push", "the server has no VAPID keys (python scripts/generate_vapid_keys.py)")
+        refused = alice.call("PUT", "/api/v1/notifications/preferences", json={"push": True})
+        check("channels: push is refused when the server cannot deliver it", refused.status_code == 409,
+              f"HTTP {refused.status_code}")
+    sent = alice.call("POST", "/api/v1/notifications/test").json()
+    titles = [n["title"] for n in alice.call("GET", "/api/v1/notifications", params={"unread_only": "true"})
+              .json()["notifications"]]
+    check("channels: a test notification is stored and waits unread", sent.get("sent") and "✅ Test notification" in titles)
+    # Connect a stream *after* it was created: what a user who was offline sees on return.
+    seen: list = []
+    stop = threading.Event()
+    thread = threading.Thread(target=stream_notifications, args=(alice, seen, stop, []), daemon=True)
+    thread.start()
+    deadline = time.time() + 15
+    while time.time() < deadline and not any("Test notification" in n["title"] for _, n in seen):
+        time.sleep(0.5)
+    stop.set()
+    thread.join(timeout=10)
+    check("offline: a notification created before connecting arrives when the app connects",
+          any("Test notification" in n["title"] for _, n in seen))
+
+
 def step_isolation(alice: Api, bob: Api, alice_notification_id, code: str) -> None:
     check("isolation: the second user sees no notifications of the first",
           bob.call("GET", "/api/v1/notifications").json()["notifications"] == [])
@@ -228,6 +263,7 @@ def main() -> int:
 
     notification_id = step_reminder(alice, args.wait_extra)
     code = step_knowledge_base(alice, bob)
+    step_channels(alice, bob)
     step_isolation(alice, bob, notification_id, code)
     step_sign_out(args.base, alice)
 

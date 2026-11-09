@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, User, Globe, Mail, Calendar, HardDrive, LogOut, Trash2, Link2, Unlink } from 'lucide-react';
+import { X, User, Globe, Mail, Calendar, HardDrive, LogOut, Trash2, Link2, Unlink, Bell, BellRing } from 'lucide-react';
 
 import { useAuth } from '../hooks/useAuth';
-import { disconnectGoogle, getGoogleAuthUrl, updateTimezone } from '../services/api';
+import {
+  disconnectGoogle, getGoogleAuthUrl, getNotificationPreferences, sendTestNotification,
+  setNotificationPreferences, updateTimezone,
+} from '../services/api';
+import { browserIsSubscribed, disablePush, enablePush, pushSupported } from '../services/push';
 
 const FALLBACK_ZONES = [
   'Africa/Cairo', 'Africa/Johannesburg', 'Africa/Lagos', 'America/Chicago', 'America/Los_Angeles', 'America/New_York',
@@ -43,6 +47,63 @@ export default function SettingsModal({ open, onClose, googleConnected, googleSe
   const [busy, setBusy] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const zones = useMemo(() => timeZones(zone), [zone]);
+  const [channels, setChannels] = useState(null);       // what the server says: { push, email, push_available, email_available }
+  const [browserPush, setBrowserPush] = useState(false); // is *this* browser subscribed
+  const [savingChannel, setSavingChannel] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    getNotificationPreferences().then(
+      (prefs) => { if (!cancelled) setChannels(prefs); },
+      () => { if (!cancelled) setChannels(null); },
+    );
+    browserIsSubscribed().then((on) => { if (!cancelled) setBrowserPush(on); }, () => {});
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const togglePush = async () => {
+    setSavingChannel(true);
+    try {
+      if (channels.push && browserPush) {
+        await disablePush();
+        setBrowserPush(false);
+        // The channel stays on for the user's other browsers; switch it off only when none is left.
+        if (channels.push_browsers <= 1) setChannels(await setNotificationPreferences({ push: false }));
+        else setChannels(await getNotificationPreferences());
+        showSuccess('Push notifications are off for this browser.');
+      } else {
+        await enablePush();
+        setBrowserPush(true);
+        setChannels(await setNotificationPreferences({ push: true }));
+        showSuccess('Push notifications are on for this browser.');
+      }
+    } catch (err) {
+      showError(err?.message || 'Could not change push notifications.');
+    } finally {
+      setSavingChannel(false);
+    }
+  };
+
+  const toggleEmail = async () => {
+    setSavingChannel(true);
+    try {
+      setChannels(await setNotificationPreferences({ email: !channels.email }));
+    } catch (err) {
+      showError(err?.message || 'Could not change email notifications.');
+    } finally {
+      setSavingChannel(false);
+    }
+  };
+
+  const sendTest = async () => {
+    try {
+      await sendTestNotification();
+      showSuccess('Test notification sent.');
+    } catch (err) {
+      showError(err?.message || 'Could not send the test notification.');
+    }
+  };
 
   useEffect(() => {
     if (!open) return undefined;
@@ -158,6 +219,42 @@ export default function SettingsModal({ open, onClose, googleConnected, googleSe
                 </select>
               </div>
               <p className="mt-1.5 mb-0 text-xs text-white/30">Used for "tomorrow", reminders and the morning briefing.</p>
+            </section>
+
+            {/* Notifications */}
+            <section className="mb-5">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-white/30 mb-2">Notifications</p>
+              <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-3 space-y-3">
+                <p className="m-0 flex items-center gap-2.5 text-sm text-white/60">
+                  <Bell className="w-4 h-4" /> In the app
+                  <span className="ml-auto text-xs text-emerald-400/80">Always on</span>
+                </p>
+                <label className="flex items-center gap-2.5 text-sm text-white/60">
+                  <BellRing className="w-4 h-4" /> Push, on this device
+                  <input type="checkbox" aria-label="Push notifications on this device" className="ml-auto cursor-pointer"
+                    checked={Boolean(channels?.push && browserPush)}
+                    disabled={savingChannel || !channels || !pushSupported() || (!channels.push_available && !browserPush)}
+                    onChange={togglePush} />
+                </label>
+                {channels && !channels.push_available && (
+                  <p className="m-0 text-xs text-white/30">Push is not set up on this server yet.</p>
+                )}
+                {!pushSupported() && <p className="m-0 text-xs text-white/30">This browser does not support push.</p>}
+                <label className="flex items-center gap-2.5 text-sm text-white/60">
+                  <Mail className="w-4 h-4" /> Email to myself
+                  <input type="checkbox" aria-label="Email notifications to myself" className="ml-auto cursor-pointer"
+                    checked={Boolean(channels?.email)}
+                    disabled={savingChannel || !channels || !channels.email_available}
+                    onChange={toggleEmail} />
+                </label>
+                {channels && !channels.email_available && (
+                  <p className="m-0 text-xs text-white/30">Connect Google to get emails. They are sent from your own Gmail to you.</p>
+                )}
+                <button onClick={sendTest} disabled={!channels}
+                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80 hover:bg-white/10 cursor-pointer disabled:opacity-50">
+                  Send a test notification
+                </button>
+              </div>
             </section>
 
             {/* Google */}

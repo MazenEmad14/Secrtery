@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     COOKIE_DOMAIN: Optional[str] = None            # only for a frontend and API on sibling sub-domains
     REFRESH_MAX_PER_IP_PER_MINUTE: int = Field(default=30, ge=1)
     TOKEN_ENCRYPTION_KEY: Optional[str] = None     # encrypts stored Google tokens when set
+    # Web Push (optional channel): a VAPID key pair identifies this server to the browsers' push services.
+    VAPID_PUBLIC_KEY: Optional[str] = None
+    VAPID_PRIVATE_KEY: Optional[str] = None
+    VAPID_SUBJECT: str = "mailto:admin@localhost"  # a mailto: or https: contact the push services can reach
 
     # ── web, Google and CORS ─────────────────────────────────────────────────
     GOOGLE_REDIRECT_URI: str = "http://localhost:5000/api/v1/auth/google/callback"
@@ -123,7 +127,7 @@ class Settings(BaseSettings):
     @field_validator(
         "GENERATION_MODEL_ID", "EMBEDDING_MODEL_ID", "EMBEDDING_MODEL_SIZE", "OPENAI_API_KEY", "OPENAI_API_URL",
         "COHERE_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "TOKEN_ENCRYPTION_KEY", "GOOGLE_SEARCH_API_KEY",
-        "GOOGLE_SEARCH_CX", "COOKIE_DOMAIN", mode="before",
+        "GOOGLE_SEARCH_CX", "COOKIE_DOMAIN", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", mode="before",
     )
     @classmethod
     def blank_means_unset(cls, value):
@@ -274,6 +278,10 @@ class Settings(BaseSettings):
             found.append("FRONTEND_URL is https, so COOKIE_SECURE should be true (cookies would also travel over plain http)")
         if self.JOB_WORKER_MODE not in ("embedded", "external"):
             found.append("JOB_WORKER_MODE must be 'embedded' or 'external'")
+        if bool(self.VAPID_PUBLIC_KEY) != bool(self.VAPID_PRIVATE_KEY):
+            found.append("VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must be set together (python scripts/generate_vapid_keys.py)")
+        if not self.VAPID_SUBJECT.startswith(("mailto:", "https://")):
+            found.append("VAPID_SUBJECT must start with mailto: or https://")
         if bool(self.GOOGLE_SEARCH_API_KEY) != bool(self.GOOGLE_SEARCH_CX):
             found.append("GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX must be set together")
         if self.LOGIN_MAX_FAILURES_PER_IP < self.LOGIN_MAX_FAILURES_PER_ACCOUNT:

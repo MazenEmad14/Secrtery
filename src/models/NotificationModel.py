@@ -53,6 +53,10 @@ class NotificationModel(BaseDataModel):
         cursor = self.collection.find(query).sort("created_at", -1).limit(limit)
         return [doc async for doc in cursor]
 
+    async def record_delivery(self, notification_id, delivery: dict) -> None:
+        """What each optional channel did with it ({"push": {"status": "sent"}, ...})."""
+        await self.collection.update_one({"_id": notification_id}, {"$set": {"delivery": delivery}})
+
     async def mark_read(self, user_id: str, notification_id: str) -> bool:
         try:
             oid = ObjectId(notification_id)

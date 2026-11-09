@@ -1,12 +1,13 @@
 import asyncio
+import hashlib
 import logging
 
 from controllers.llm_schemas import UrgentVerdict
-from helpers.event_bus import publish
 from helpers.exceptions import LLMOutputError
 from helpers.llm_json import llm_json
 from helpers.prompts import render
 from models.UserModel import UserModel
+from services.notifier import notify
 from stores.gmail.GmailService import GmailService
 
 logger = logging.getLogger("uvicorn.error")
@@ -64,8 +65,12 @@ async def _evaluate_user(services, user: dict):
         return
 
     if verdict.is_urgent and verdict.message:
-        await publish(user_id, verdict.message)
-        logger.info(f"Proactive message queued for user {user_id}")
+        # The same emails give the same key, so a restart (which forgets `_seen_message_ids`) cannot alert twice.
+        ids = sorted(str(e.get("message_id")) for e in new_emails)
+        key = "inbox_alert:" + user_id + ":" + hashlib.sha1("|".join(ids).encode()).hexdigest()
+        await notify(services.mongo_db, user_id, kind="inbox_alert", title="📬 Urgent email",
+                     body=verdict.message, data={"message_ids": ids}, dedupe_key=key)
+        logger.info(f"Proactive alert stored for user {user_id}")
 
 
 async def evaluate_inbox_and_notify(services):

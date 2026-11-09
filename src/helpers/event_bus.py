@@ -1,34 +1,15 @@
-import asyncio
+"""One-time tickets that let the browser's EventSource open the notifications stream.
+
+EventSource cannot send an Authorization header, so a logged-in page asks for a ticket and passes it in the URL.
+Tickets live a minute and work once, so they are kept in memory: losing them in a restart only means the page asks
+for a new one. (The notifications themselves are stored in MongoDB, see services/notifier.py.)
+"""
 import secrets
 import time
 from typing import Optional
 
-# Per-user queues for proactive messages produced by background jobs.
-_MAX_QUEUED = 50
-_queues: dict[str, asyncio.Queue] = {}
-
-# One-time tickets that let the browser's EventSource (which cannot send an
-# Authorization header) open the notifications stream for a logged-in user.
 _TICKET_TTL_SECONDS = 60
 _tickets: dict[str, tuple[str, float]] = {}
-
-
-def get_user_queue(user_id: str) -> asyncio.Queue:
-    queue = _queues.get(user_id)
-    if queue is None:
-        queue = asyncio.Queue(maxsize=_MAX_QUEUED)
-        _queues[user_id] = queue
-    return queue
-
-
-async def publish(user_id: str, message: str) -> None:
-    queue = get_user_queue(user_id)
-    if queue.full():
-        try:
-            queue.get_nowait()  # drop the oldest so a user who never connects can't grow memory
-        except asyncio.QueueEmpty:
-            pass
-    await queue.put(message)
 
 
 def issue_ticket(user_id: str) -> str:

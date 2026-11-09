@@ -15,7 +15,7 @@ from typing import Optional
 
 from helpers.config import get_settings
 from helpers.timezones import resolve_timezone
-from models.NotificationModel import NotificationModel
+from services.notifier import notify
 from models.UserModel import UserModel
 
 logger = logging.getLogger("uvicorn.error")
@@ -82,7 +82,7 @@ async def backfill_due_dates(db, limit: int = 200) -> int:
 async def deliver_due_reminders(db, now: Optional[datetime] = None, limit: int = 500) -> int:
     """Create a notification for each due, undelivered reminder. Returns how many notifications were created."""
     now = now or datetime.utcnow()
-    reminders, notifications, created = db["reminders"], NotificationModel(db), 0
+    reminders, created = db["reminders"], 0
     cursor = reminders.find(
         {"delivered_at": None, "is_completed": {"$ne": True}, "due_at": {"$lte": now}}).sort("due_at", 1).limit(limit)
     async for doc in cursor:
@@ -90,13 +90,13 @@ async def deliver_due_reminders(db, now: Optional[datetime] = None, limit: int =
         if not user_id:  # nobody to tell
             await reminders.update_one({"_id": doc["_id"], "delivered_at": None}, {"$set": {"delivered_at": now}})
             continue
-        _, was_created = await notifications.create(
-            user_id=user_id, kind=REMINDER_KIND, title=f"🔔 Reminder: {doc.get('task', '')}",
+        sent = await notify(
+            db, user_id=user_id, kind=REMINDER_KIND, title=f"🔔 Reminder: {doc.get('task', '')}",
             body=doc.get("notes", ""),
             data={"reminder_id": str(doc["_id"]), "due_at": doc["due_at"].isoformat() + "Z"},
             dedupe_key=f"reminder:{doc['_id']}")
         await reminders.update_one({"_id": doc["_id"], "delivered_at": None}, {"$set": {"delivered_at": now}})
-        created += int(was_created)
+        created += int(sent is not None)
     return created
 
 

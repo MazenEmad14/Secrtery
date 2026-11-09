@@ -3,10 +3,10 @@ import logging
 from datetime import time as datetime_time
 
 from helpers.config import get_settings
-from helpers.event_bus import publish
 from helpers.timezones import local_now
 from models.UserModel import UserModel
 from services.daily_summary import DailySummaryService
+from services.notifier import notify
 from stores.calendar.CalendarService import CalendarService
 from stores.gmail.GmailService import GmailService
 
@@ -89,7 +89,10 @@ class NotificationEngine:
                 timezone_name=user.get("timezone"),
             )
             summary = await service.generate(project_id="default", user_id=user_id)
-            await publish(user_id, summary["summary"])
+            # One summary per user per local day, even if the engine restarts and tries again.
+            day = local_now(user.get("timezone")).date().isoformat()
+            await notify(self.services.mongo_db, user_id, kind="daily_summary", title="☀️ Your daily summary",
+                         body=summary["summary"], dedupe_key=f"daily_summary:{user_id}:{day}")
             logger.info(f"Daily summary delivered for user {user_id}")
         except Exception as exc:
             # Allow a retry on the next tick.

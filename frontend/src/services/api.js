@@ -349,6 +349,39 @@ export async function markNotificationRead(id) {
   await request(`/api/v1/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', retries: 0 });
 }
 
+/** Which optional channels (Web Push, email to yourself) are on, and which this server can offer. */
+export async function getNotificationPreferences() {
+  return request('/api/v1/notifications/preferences');
+}
+
+/** Switch optional channels on or off: `{ push: true }`, `{ email: false }`. Refused with a reason if unavailable. */
+export async function setNotificationPreferences(changes) {
+  return request('/api/v1/notifications/preferences', { method: 'PUT', body: JSON.stringify(changes), retries: 0 });
+}
+
+export async function getPushPublicKey() {
+  const { public_key: key } = await request('/api/v1/notifications/push/public-key');
+  return key;
+}
+
+/** Send this browser's push subscription (from PushManager.subscribe) to the server. */
+export async function savePushSubscription(subscription) {
+  const { endpoint, keys } = subscription.toJSON();
+  await request('/api/v1/notifications/push/subscription', {
+    method: 'POST', body: JSON.stringify({ endpoint, keys }), retries: 0,
+  });
+}
+
+export async function removePushSubscription(endpoint) {
+  await request('/api/v1/notifications/push/unsubscribe', {
+    method: 'POST', body: JSON.stringify({ endpoint }), retries: 0,
+  });
+}
+
+export async function sendTestNotification() {
+  return request('/api/v1/notifications/test', { method: 'POST', retries: 0 });
+}
+
 /** Save the time zone the user picked in Settings. */
 export async function updateTimezone(zone) {
   await request('/api/v1/auth/local/timezone', { method: 'PUT', body: JSON.stringify({ timezone: zone }), retries: 0 });

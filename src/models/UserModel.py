@@ -84,6 +84,21 @@ class UserModel(BaseDataModel):
         )
         return result.matched_count > 0
 
+    async def get_notification_prefs(self, user_id: str) -> dict:
+        """Which optional channels the user switched on. The web app always gets the notification."""
+        user = await self.get_user_by_id(user_id)
+        prefs = (user or {}).get("notification_prefs") or {}
+        return {"push": bool(prefs.get("push")), "email": bool(prefs.get("email"))}
+
+    async def set_notification_prefs(self, user_id: str, changes: dict) -> dict:
+        from bson import ObjectId
+
+        updates = {f"notification_prefs.{name}": bool(value) for name, value in changes.items()
+                   if name in ("push", "email")}
+        if updates:
+            await self.collection.update_one({"_id": ObjectId(user_id)}, {"$set": updates})
+        return await self.get_notification_prefs(user_id)
+
     async def get_google_token(self, email: str) -> Optional[Dict[str, Any]]:
         """Retrieve per-user Google OAuth token dict from MongoDB.
 

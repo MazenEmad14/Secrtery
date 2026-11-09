@@ -1,5 +1,4 @@
 """Regression tests for the P0 security fixes (see REFACTOR_PLAN.md section 1)."""
-import asyncio
 import sys
 import threading
 import time
@@ -140,16 +139,10 @@ def test_oauth_callback_rejects_unknown_state_and_stores_nothing():
     assert response.status_code == 400
 
 
-# ── 1.7 per-user notifications ───────────────────────────────────────────────
-def test_notifications_are_per_user_and_tickets_are_single_use():
+# ── 1.7 notification stream tickets ──────────────────────────────────────────
+# (The notifications themselves are stored per user in MongoDB: see test_notifier.py.)
+def test_stream_tickets_are_single_use():
     from helpers import event_bus
-
-    async def scenario():
-        await event_bus.publish("alice", "for alice")
-        assert event_bus.get_user_queue("bob").empty()
-        assert await event_bus.get_user_queue("alice").get() == "for alice"
-
-    asyncio.run(scenario())
 
     ticket = event_bus.issue_ticket("alice")
     assert event_bus.redeem_ticket(ticket) == "alice"

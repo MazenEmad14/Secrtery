@@ -290,22 +290,6 @@ export default function WorkspacePage() {
         return;
       }
 
-      eventSource.onmessage = (event) => {
-        if (!event.data) return;
-        let content = event.data;
-        try { content = JSON.parse(event.data); } catch { /* plain text */ }
-
-        showInfo('New Proactive Alert');
-        setMessages(prev => [...prev, {
-          id: Date.now() + Math.random(),
-          role: 'assistant',
-          content,
-          isProactive: true,
-          agents: [{ label: 'Proactive', icon: Brain, color: 'text-amber-400', bg: 'bg-amber-400/10' }],
-          autoPlayTTS: false
-        }]);
-      };
-
       // Stored notifications (reminders that came due, also those missed while offline). Shown once, then
       // marked read on the server so they do not come back.
       eventSource.addEventListener('notification', (event) => {
@@ -320,7 +304,7 @@ export default function WorkspacePage() {
           role: 'assistant',
           content: note.body ? `${note.title}\n\n${note.body}` : note.title,
           isProactive: true,
-          agents: [{ label: 'Reminder', icon: Bell, color: 'text-amber-400', bg: 'bg-amber-400/10' }],
+          agents: [{ label: note.kind === 'reminder' ? 'Reminder' : 'Proactive', icon: note.kind === 'reminder' ? Bell : Brain, color: 'text-amber-400', bg: 'bg-amber-400/10' }],
           autoPlayTTS: false
         }]);
         // If this fails the server resends it on the next connection; the set above stops a second copy.

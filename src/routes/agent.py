@@ -14,7 +14,7 @@ import io
 import hmac
 from helpers.config import get_settings
 from helpers.services import services_of
-from helpers.event_bus import get_user_queue, issue_ticket, redeem_ticket
+from helpers.event_bus import issue_ticket, redeem_ticket
 from helpers.auth_utils import get_current_user
 from models.NotificationModel import NotificationModel
 from models.UserModel import UserModel
@@ -477,8 +477,7 @@ async def notifications_endpoint(request: Request, ticket: str):
     if user_id is None:
         return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": "Invalid or expired ticket"})
 
-    queue = get_user_queue(user_id)
-    notifications = NotificationModel(services_of(request).mongo_db)
+    notifications =NotificationModel(services_of(request).mongo_db)
     sent_ids: set = set()  # unread notifications already pushed on this stream (the client marks them read)
 
     async def stored_notifications():
@@ -497,20 +496,18 @@ async def notifications_endpoint(request: Request, ticket: str):
             yield f"event: notification\ndata: {payload}\n\n"
 
     async def event_generator():
+        idle_polls = 0
         while True:
             if await request.is_disconnected():
                 break
-            try:
-                message = await asyncio.wait_for(queue.get(), timeout=2.0)
-                # JSON-encode so newlines in the message cannot break SSE framing.
-                yield f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
-            except asyncio.TimeoutError:
-                pass
-            except Exception as e:
-                logger.error(f"Error in SSE generator: {e}")
-                break
             async for chunk in stored_notifications():
+                idle_polls = 0
                 yield chunk
+            idle_polls += 1
+            if idle_polls >= 8:  # a comment line every ~16 s keeps proxies from closing a quiet stream
+                idle_polls = 0
+                yield ": keepalive\n\n"
+            await asyncio.sleep(2.0)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
