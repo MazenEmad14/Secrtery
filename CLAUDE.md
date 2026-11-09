@@ -1,6 +1,13 @@
-# CLAUDE.md — How to work on NexusAI
+# CLAUDE.md — How to work on the Secrtery repository
 
 This file is the standing brief for any AI coding agent (and any human) working in this repository. Read it fully at the start of every session. When it conflicts with a casual request, ask before acting.
+
+## 0. Which repository this is
+- **This repository: https://github.com/MazenEmad14/Secrtery (private).** It is the home of the improved product. All work happens here, and `origin` must point here. Check with `git remote -v` at the start of a session; if `origin` is anything else, stop and ask.
+- The product is still called **NexusAI** in the code, the UI and the documents; only the repository changed.
+- **https://github.com/MazenEmad14/NexusAI is the old public repository.** It is frozen: do not push, open PRs, or copy files to it. The planning documents and this file were deliberately removed from it and erased from its history; they must never appear there again. If a local clone has it as a remote (for example named `nexusai`), leave it alone.
+- The remote `depi` (ahmedokasha74/depi_GB_AI), if present, belongs to someone else: never push there.
+- Everything in this repository is private: the strategy documents, prompts and plans may be referenced freely here but must not be published, pasted into public issues, or sent to public services.
 
 Background documents (read the relevant one before starting a wave):
 - `NEXUSAI_PRODUCT_VISION.md` — what we are building and why (the commitments ledger, the morning brief, approvals).
@@ -118,7 +125,8 @@ Until then: usage metering runs in **shadow mode** (we learn real costs per user
 Work top to bottom. A wave is done when all its PRs are merged and its exit check passes. Each PR below is sized to be reviewable in one sitting. Do not start a later wave early without the user's say-so.
 
 ### Git workflow
-- One PR per item: branch `wave<N>/<short-name>` from `main`, open a PR to `main`, CI must be green, then merge.
+- All branches and PRs live in this repository (`origin` = MazenEmad14/Secrtery). Never target MazenEmad14/NexusAI.
+- One PR per item: branch `wave<N>/<short-name>` from `main`, open a PR to `main` in this repository, CI must be green, then merge.
 - PR description template:
   ```
   ## Goal
