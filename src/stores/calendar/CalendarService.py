@@ -126,7 +126,8 @@ class CalendarService:
                      attendees: List[str] = None,
                      duration_hours: int = 1,
                      description: str = "",
-                     time_zone: Optional[str] = None) -> Optional[Dict]:
+                     time_zone: Optional[str] = None,
+                     event_id: Optional[str] = None) -> Optional[Dict]:
         """
         Create a calendar event.
         
@@ -138,6 +139,9 @@ class CalendarService:
             duration_hours: Duration in hours (default 1)
             description: Event description
             time_zone: IANA zone the date and time are in (the user's zone; default if not given)
+            event_id: an id to create the event under (Google allows lowercase a-v and 0-9, 5 to 1024 characters).
+                Creating the same id twice returns the event already there instead of a second one, which is what
+                makes a retried, approved "create event" safe.
             
         Returns:
             Dict with the event details
@@ -176,12 +180,21 @@ class CalendarService:
                 valid = [a for a in attendees if parse_recipients([a])]
                 event_body['attendees'] = [{'email': email.strip()} for email in valid]
 
+            if event_id:
+                event_body['id'] = event_id
+
             with self.lock:
-                event = self.service.events().insert(
-                    calendarId='primary', 
-                    body=event_body,
-                    sendUpdates='all'
-                ).execute()
+                try:
+                    event = self.service.events().insert(
+                        calendarId='primary',
+                        body=event_body,
+                        sendUpdates='all'
+                    ).execute()
+                except Exception as exc:
+                    if not (event_id and getattr(getattr(exc, "resp", None), "status", None) == 409):
+                        raise
+                    # 409: this id exists, so an earlier attempt already created the event.
+                    event = self.service.events().get(calendarId='primary', eventId=event_id).execute()
 
             logger.info(f"Calendar event created: {event.get('id')}")
 

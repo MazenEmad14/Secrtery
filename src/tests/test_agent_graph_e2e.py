@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from action_fakes import FakeActionLog, approve_paused
 from agent import AgentDeps, build_agent_graph, create_initial_state
 from agent.nodes import actions
 from helpers.google_context import set_google_token
@@ -82,7 +83,8 @@ def test_sending_an_email_pauses_for_approval_and_resumes_with_the_extracted_det
 
     monkeypatch.setattr(actions, "gmail_for_request", lambda: FakeGmail())
     llm = FakeLLM()
-    graph = build_agent_graph(AgentDeps(generation_client=llm), checkpointer=MemorySaver())
+    log = FakeActionLog()
+    graph = build_agent_graph(AgentDeps(generation_client=llm, action_log=log), checkpointer=MemorySaver())
     config = _config("approval")
 
     async def scenario():
@@ -92,7 +94,8 @@ def test_sending_an_email_pauses_for_approval_and_resumes_with_the_extracted_det
         assert sent == {}  # nothing was sent while waiting for approval
         assert paused.values["action_details"]["recipient"] == "ahmed@example.com"
 
-        final = await graph.ainvoke(None, config=config)  # the user approves
+        await approve_paused(graph, config, log, "send_email", "u1")  # the user approves (as the resume route records it)
+        final = await graph.ainvoke(None, config=config)
         return final
 
     final = _run(scenario())
@@ -102,11 +105,13 @@ def test_sending_an_email_pauses_for_approval_and_resumes_with_the_extracted_det
 
 def test_without_a_google_account_the_approved_email_asks_to_connect():
     set_google_token(None)
-    graph = build_agent_graph(AgentDeps(generation_client=FakeLLM()), checkpointer=MemorySaver())
+    log = FakeActionLog()
+    graph = build_agent_graph(AgentDeps(generation_client=FakeLLM(), action_log=log), checkpointer=MemorySaver())
     config = _config("no-google")
 
     async def scenario():
         await graph.ainvoke(create_initial_state("send an email to ahmed@example.com that I will be late", user_id="u1"), config=config)
+        await approve_paused(graph, config, log, "send_email", "u1")
         return await graph.ainvoke(None, config=config)
 
     final = _run(scenario())

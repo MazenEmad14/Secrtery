@@ -1,6 +1,7 @@
 """Create every collection index once, at startup."""
 import logging
 
+from models.ActionLogModel import ActionLogModel
 from models.AssetModel import AssetModel
 from models.ChunkModel import ChunkModel
 from models.EmailModel import EmailModel
@@ -20,7 +21,7 @@ logger = logging.getLogger("uvicorn.error")
 
 ALL_MODELS = (
     ProjectModel, ChunkModel, AssetModel, QueryModel, EmailModel, MeetingModel,
-    ReminderModel, TaskModel, UserModel, RateLimitModel, SessionModel, JobModel, NotificationModel, PushSubscriptionModel,
+    ReminderModel, TaskModel, UserModel, RateLimitModel, SessionModel, JobModel, NotificationModel, PushSubscriptionModel, ActionLogModel,
 )
 
 

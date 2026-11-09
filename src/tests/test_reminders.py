@@ -16,7 +16,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent.deps import AgentDeps
+from action_fakes import approve
 from agent.nodes.actions import save_reminder_node
 from helpers.auth_utils import get_current_user
 from helpers.error_handlers import install_error_handlers
@@ -207,7 +207,9 @@ def test_approving_a_reminder_schedules_it():
         state = {"query": "remind me", "user_id": "alice", "user_timezone": "Africa/Cairo", "project_id": "default",
                  "priority": "medium", "metadata": {},
                  "action_details": {"task": "send the offer", "date": "2026-01-15", "time": "14:00"}}
-        await save_reminder_node(state, AgentDeps(db_client=db))
+        deps, state = await approve(state, "save_reminder")
+        deps.db_client = db
+        await save_reminder_node(state, deps)
         saved = await db["reminders"].find_one({"user_id": "alice"})
         assert saved["due_at"] == datetime(2026, 1, 15, 12, 0)
 

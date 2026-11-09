@@ -1,18 +1,20 @@
 """Actions the user approves before they run: send email, create an event, set a reminder."""
 
+import asyncio
 import logging
 from agent.deps import AgentDeps
 from agent.errors import fail
-from helpers.exceptions import DomainError, LLMUnavailable
-from agent.google_clients import GOOGLE_CONNECT_MESSAGE
+from helpers.exceptions import LLMUnavailable
 from agent.google_clients import calendar_for_request
 from agent.google_clients import gmail_for_request
 from agent.state import AgentState
 from controllers.classifier import ClassifierController
 from controllers.formatter import ResponseFormatter
-from helpers.exceptions import GoogleAuthRequiredException
 from helpers.validation import parse_recipients
+from agent.nodes.gated import execute_action, report
+from helpers.exceptions import ValidationFailed
 from models.db_schemes import Reminder
+from services.actions import google_event_id
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -52,76 +54,62 @@ def extract_action_details_node(state: AgentState, deps: AgentDeps) -> AgentStat
     return state
 
 
-def send_email_node(state: AgentState, deps: AgentDeps) -> AgentState:
-    """Send an email via Gmail API."""
+async def send_email_node(state: AgentState, deps: AgentDeps) -> AgentState:
+    """Send an email via Gmail API (runs only after the user approved this exact email; at most once)."""
     details = state.get("action_details", {})
 
-    try:
-        gmail_service = gmail_for_request()
-    except GoogleAuthRequiredException:
-        state["result"] = GOOGLE_CONNECT_MESSAGE
-        state["status"] = "error"
-        return state
+    async def run() -> dict:
+        gmail_service = await asyncio.to_thread(gmail_for_request)
+        if parse_recipients(details.get("recipient", "")) is None:
+            raise ValidationFailed("I couldn't find a valid recipient email address, so nothing was sent.")
+        return await asyncio.to_thread(
+            gmail_service.send_email,
+            to=details.get("recipient", ""), subject=details.get("subject", ""), body=details.get("body", ""))
 
-    if parse_recipients(details.get("recipient", "")) is None:
-        state["result"] = ResponseFormatter.format_error("I couldn't find a valid recipient email address, so nothing was sent.")
-        state["status"] = "error"
-        return state
+    outcome = await execute_action(state, deps, "send_email", run, result_id_key="message_id")
 
-    try:
-        result = gmail_service.send_email(
-            to=details.get("recipient", ""),
-            subject=details.get("subject", ""),
-            body=details.get("body", "")
-        )
-    except DomainError as exc:  # an expired Google connection and a Gmail outage are told apart
-        return fail(state, exc)
+    def done(result: dict) -> None:
+        state["result"] = ResponseFormatter.format_email_sent(result)
+        state["status"] = "success"
+        state["metadata"]["source"] = "gmail_send"
+        state["metadata"]["message_id"] = result.get("message_id", "")
 
-    state["result"] = ResponseFormatter.format_email_sent(result)
-    state["status"] = "success"
-    state["metadata"]["source"] = "gmail_send"
-    state["metadata"]["message_id"] = result.get("message_id", "")
-    return state
+    return report(state, "send_email", outcome, done)
 
 
-def create_calendar_event_node(state: AgentState, deps: AgentDeps) -> AgentState:
-    """Create a Google Calendar event."""
+async def create_calendar_event_node(state: AgentState, deps: AgentDeps) -> AgentState:
+    """Create a Google Calendar event (after approval). The event gets an id made from the approval, so creating
+    it twice cannot give two events."""
     details = state.get("action_details", {})
+    event_id = google_event_id((state.get("metadata") or {}).get("action_id", ""))
 
-    try:
-        calendar_service = calendar_for_request()
-    except GoogleAuthRequiredException:
-        state["result"] = GOOGLE_CONNECT_MESSAGE
-        state["status"] = "error"
-        return state
+    async def run() -> dict:
+        calendar_service = await asyncio.to_thread(calendar_for_request)
+        return await asyncio.to_thread(
+            calendar_service.create_event,
+            title=details.get("title", "Meeting"), date=details.get("date", ""), time=details.get("time", "12:00"),
+            attendees=details.get("attendees", []), time_zone=state.get("user_timezone") or None, event_id=event_id)
 
-    try:
-        result = calendar_service.create_event(
-            title=details.get("title", "Meeting"),
-            date=details.get("date", ""),
-            time=details.get("time", "12:00"),
-            attendees=details.get("attendees", []),
-            time_zone=state.get("user_timezone") or None,
-        )
-    except DomainError as exc:
-        return fail(state, exc)
+    outcome = await execute_action(state, deps, "create_calendar_event", run, idempotent=True, result_id_key="event_id")
 
-    state["result"] = ResponseFormatter.format_event_created(result)
-    state["status"] = "success"
-    state["metadata"]["source"] = "calendar"
-    state["metadata"]["event_id"] = result.get("event_id", "")
-    return state
+    def done(result: dict) -> None:
+        state["result"] = ResponseFormatter.format_event_created(result)
+        state["status"] = "success"
+        state["metadata"]["source"] = "calendar"
+        state["metadata"]["event_id"] = result.get("event_id", "")
+
+    return report(state, "create_calendar_event", outcome, done)
 
 
 async def save_reminder_node(state: AgentState, deps: AgentDeps) -> AgentState:
-    """Save a reminder to MongoDB."""
-    db_client = deps.db_client
+    """Save a reminder to MongoDB (after approval). The approval's id is unique on the reminder, so approving
+    twice stores one."""
     details = state.get("action_details", {})
 
-    if db_client is not None:
+    async def run() -> dict:
         from models.ReminderModel import ReminderModel
-        reminder_model = await ReminderModel.create_instance(db_client=db_client)
         from services.reminders import compute_due_at
+
         reminder = Reminder(
             task=details.get("task", state["query"]),
             date=details.get("date", ""),
@@ -131,11 +119,18 @@ async def save_reminder_node(state: AgentState, deps: AgentDeps) -> AgentState:
             priority=details.get("priority", state.get("priority", "medium")),
             notes=details.get("notes", ""),
             project_id=state.get("project_id", "default"),
-            user_id=state.get("user_id", "")
+            user_id=state.get("user_id", ""),
+            action_id=(state.get("metadata") or {}).get("action_id"),
         )
-        await reminder_model.create_reminder(reminder=reminder)
+        saved = await ReminderModel(deps.db_client).create_for_action(reminder)
+        return {"reminder_id": str(saved.id)}
 
-    state["result"] = ResponseFormatter.format_reminder_set(details)
-    state["status"] = "success"
-    state["metadata"]["source"] = "reminder"
-    return state
+    outcome = await execute_action(state, deps, "save_reminder", run, idempotent=True, result_id_key="reminder_id")
+
+    def done(result: dict) -> None:
+        state["result"] = ResponseFormatter.format_reminder_set(details)
+        state["status"] = "success"
+        state["metadata"]["source"] = "reminder"
+        state["metadata"]["reminder_id"] = result.get("reminder_id", "")
+
+    return report(state, "save_reminder", outcome, done)

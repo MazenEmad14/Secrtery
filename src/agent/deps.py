@@ -15,3 +15,4 @@ class AgentDeps:
     embedding_client: Any = None   # LLM provider used to embed text
     vectordb_client: Any = None
     template_parser: Any = None
+    action_log: Any = None         # the audit log of approved actions (default: actions_log in db_client)

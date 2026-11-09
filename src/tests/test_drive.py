@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from action_fakes import FakeActionLog, approve, approve_paused
 from agent import AgentDeps, build_agent_graph, create_initial_state
 from agent import routing
 from agent.nodes import drive as drive_nodes
@@ -296,6 +297,12 @@ def state_for(query, **extra):
     return state
 
 
+async def approved_save(state):
+    """The save node as the app runs it: after the user approved exactly this action."""
+    deps, state = await approve(state, "drive_save")
+    return await drive_nodes.drive_save_node(state, deps)
+
+
 def run_search(monkeypatch, drive, llm, query="find the proposal"):
     monkeypatch.setattr(drive_nodes, "drive_for_request", lambda: drive)
     return run(drive_nodes.drive_search_node(state_for(query), AgentDeps(generation_client=llm)))
@@ -358,7 +365,7 @@ def test_without_google_or_without_drive_permission_the_user_is_told_what_to_do(
 def test_creating_a_document_needs_text(monkeypatch):
     drive = FakeDrive()
     monkeypatch.setattr(drive_nodes, "drive_for_request", lambda: drive)
-    node = lambda details: run(drive_nodes.drive_save_node(state_for("save", action_details=details), AgentDeps()))
+    node = lambda details: run(approved_save(state_for("save", action_details=details)))
 
     done = node({"operation": "create_document", "title": "Meeting Notes", "content": "Decisions: ship it."})
     assert done["status"] == "success" and "Document created" in done["result"] and drive.created == [("Meeting Notes", "Decisions: ship it.")]
@@ -375,8 +382,8 @@ def test_uploading_only_sends_a_file_from_the_users_own_project(tmp_path, monkey
     monkeypatch.setattr(project_files, "ProjectController", lambda: SimpleNamespace(get_project_path=lambda pid: str(project_dir)))
     drive = FakeDrive()
     monkeypatch.setattr(drive_nodes, "drive_for_request", lambda: drive)
-    upload = lambda name: run(drive_nodes.drive_save_node(
-        state_for("upload", action_details={"operation": "upload_file", "file_name": name}), AgentDeps()))
+    upload = lambda name: run(approved_save(
+        state_for("upload", action_details={"operation": "upload_file", "file_name": name})))
 
     ok = upload("notes.txt")
     assert ok["status"] == "success" and "File uploaded" in ok["result"] and drive.uploaded == [("notes.txt", b"hello", "text/plain")]
@@ -408,7 +415,8 @@ def test_saving_to_drive_pauses_for_approval_and_creates_nothing_until_approved(
     monkeypatch.setattr(drive_nodes, "drive_for_request", lambda: drive)
     llm = GraphLLM({"request_type": "action", "action_type": "drive_save", "priority": "medium"},
                    {"operation": "create_document", "title": "Meeting Notes", "content": "Ship it."})
-    graph = build_agent_graph(AgentDeps(generation_client=llm), checkpointer=MemorySaver())
+    log = FakeActionLog()
+    graph = build_agent_graph(AgentDeps(generation_client=llm, action_log=log), checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "drive"}}
 
     async def scenario():
@@ -416,6 +424,7 @@ def test_saving_to_drive_pauses_for_approval_and_creates_nothing_until_approved(
         paused = await graph.aget_state(config)
         assert paused.next == ("drive_save",) and drive.created == []
         assert paused.values["action_details"]["title"] == "Meeting Notes"
+        await approve_paused(graph, config, log, "drive_save", "u1")    # what the resume route records
         return await graph.ainvoke(None, config=config)
 
     final = run(scenario())

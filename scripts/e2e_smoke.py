@@ -121,6 +121,18 @@ def step_reminder(alice: Api, wait_extra: int) -> None:
         "thread_id": body["thread_id"], "approve": True, "resume_token": body["metadata"].get("resume_token")})
     check("approval: the reminder is saved", approve.ok and approve.json().get("status") == "success",
           f"HTTP {approve.status_code} {approve.text[:200]}")
+    replay = alice.call("POST", "/api/v1/agent/resume", json={
+        "thread_id": body["thread_id"], "approve": True, "resume_token": body["metadata"].get("resume_token")})
+    check("approval: approving the same action again does nothing", not replay.ok, f"HTTP {replay.status_code}")
+    saved = [r for r in alice.call("GET", "/api/v1/reminders").json().get("data", {}).get("reminders", [])
+             if marker in r.get("task", "")]
+    check("approval: exactly one reminder was saved", len(saved) == 1, f"{len(saved)} reminders")
+    log = alice.call("GET", "/api/v1/actions/log").json()["actions"]
+    row = next((r for r in log if r["action_id"] == body["metadata"].get("action_id")), None)
+    check("audit log: the action shows proposed, approved by you and done, with the reminder id",
+          row is not None and row["status"] == "done" and row["action_type"] == "save_reminder"
+          and row["decided_at"] and row["executed_at"] and row["result_id"] and marker in str(row["summary"]),
+          f"row={row}")
 
     # Delivery: wait until due + 60 s (the acceptance limit), watching both the stream and the REST list.
     deadline = due.timestamp() + 60 + wait_extra
@@ -174,6 +186,28 @@ def step_knowledge_base(alice: Api, bob: Api) -> str:
     check("knowledge base: the answer contains the uploaded fact",
           answer.ok and code in answer.json().get("answer", ""), f"HTTP {answer.status_code} {answer.text[:200]}")
     return code
+
+
+def step_rejection(alice: Api, bob: Api) -> None:
+    marker = "reject" + uuid.uuid4().hex[:6]
+    chat = alice.call("POST", "/api/v1/agent/chat", json={
+        "query": f"remind me to {marker} on 2030-01-15 at 10:00", "thread_id": "rej" + marker})
+    body = chat.json() if chat.ok else {}
+    if not check("rejection: a reminder request pauses for approval", body.get("status") == "pending_approval",
+                 f"HTTP {chat.status_code} {chat.text[:150]}"):
+        return
+    no = alice.call("POST", "/api/v1/agent/resume", json={
+        "thread_id": body["thread_id"], "approve": False, "resume_token": body["metadata"].get("resume_token")})
+    check("rejection: the user can say no", no.ok and no.json().get("status") == "rejected", f"HTTP {no.status_code}")
+    saved = [r for r in alice.call("GET", "/api/v1/reminders").json().get("data", {}).get("reminders", [])
+             if marker in r.get("task", "")]
+    check("rejection: nothing was saved", saved == [], f"{len(saved)} reminders")
+    log = alice.call("GET", "/api/v1/actions/log").json()["actions"]
+    row = next((r for r in log if r["action_id"] == body["metadata"].get("action_id")), None)
+    check("audit log: a rejected action is recorded as rejected", row is not None and row["status"] == "rejected",
+          f"row={row}")
+    check("audit log: the second user sees none of the first user's actions",
+          bob.call("GET", "/api/v1/actions/log").json()["actions"] == [])
 
 
 def step_channels(alice: Api, bob: Api) -> None:
@@ -263,6 +297,7 @@ def main() -> int:
 
     notification_id = step_reminder(alice, args.wait_extra)
     code = step_knowledge_base(alice, bob)
+    step_rejection(alice, bob)
     step_channels(alice, bob)
     step_isolation(alice, bob, notification_id, code)
     step_sign_out(args.base, alice)

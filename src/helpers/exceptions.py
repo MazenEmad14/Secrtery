@@ -92,9 +92,10 @@ class ExternalServiceError(DomainError):
     code = "external_service_error"
     default_message = "A connected service is not responding. Please try again shortly."
 
-    def __init__(self, detail: str = "", service: str = ""):
+    def __init__(self, detail: str = "", service: str = "", http_status: int = 0):
         super().__init__(detail or self.default_message)
         self.service = service
+        self.http_status = http_status  # what the service answered, 0 if it never did (timeout, dropped connection)
 
 
 class ValidationFailed(DomainError):

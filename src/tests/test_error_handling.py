@@ -14,6 +14,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from action_fakes import approve
 from agent import AgentDeps, build_agent_graph, create_initial_state
 from agent.nodes import actions, gmail as gmail_node
 from helpers.auth_utils import create_access_token, get_current_user
@@ -337,9 +338,19 @@ def test_an_unavailable_model_while_building_the_gmail_search_is_reported(monkey
     assert final["status"] == "error" and final["metadata"]["error_code"] == "llm_unavailable"
 
 
+def _approved(node, state, node_name):
+    """Run an action node as the app does: after the user approved exactly this action."""
+    async def scenario():
+        deps, approved_state = await approve(state, node_name, user_id="u1")
+        return await node(approved_state, deps)
+
+    return asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("error, fragment", [
     (GoogleAuthRequiredException(), "reconnect"),
-    (ExternalServiceError("Gmail 500", service="Gmail"), "not responding"),
+    # Gmail answered with a 4xx: it refused, so nothing was sent and the user can simply try again.
+    (ExternalServiceError("Gmail 400", service="Gmail", http_status=400), "not responding"),
     (ValidationFailed("That email address is not valid, so nothing was sent."), "not valid"),
 ])
 def test_approved_actions_tell_the_user_why_they_failed(monkeypatch, error, fragment):
@@ -349,7 +360,7 @@ def test_approved_actions_tell_the_user_why_they_failed(monkeypatch, error, frag
 
     monkeypatch.setattr(actions, "gmail_for_request", lambda: FailingGmail())
     state = {"action_details": {"recipient": "a@example.com", "subject": "s", "body": "b"}, "metadata": {}}
-    result = actions.send_email_node(state, AgentDeps())
+    result = _approved(actions.send_email_node, state, "send_email")
     assert result["status"] == "error" and fragment in result["result"].lower()
 
 
@@ -360,7 +371,7 @@ def test_a_calendar_failure_is_explained(monkeypatch):
 
     monkeypatch.setattr(actions, "calendar_for_request", lambda: FailingCalendar())
     state = {"action_details": {"title": "x", "date": "tomorrow-ish", "time": "soon"}, "metadata": {}}
-    result = actions.create_calendar_event_node(state, AgentDeps())
+    result = _approved(actions.create_calendar_event_node, state, "create_calendar_event")
     assert result["status"] == "error" and "date or time" in result["result"]
 
 

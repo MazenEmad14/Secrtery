@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, User, Globe, Mail, Calendar, HardDrive, LogOut, Trash2, Link2, Unlink, Bell, BellRing } from 'lucide-react';
+import { X, User, Globe, Mail, Calendar, HardDrive, LogOut, Trash2, Link2, Unlink, Bell, BellRing, History } from 'lucide-react';
 
 import { useAuth } from '../hooks/useAuth';
 import {
-  disconnectGoogle, getGoogleAuthUrl, getNotificationPreferences, sendTestNotification,
+  disconnectGoogle, fetchActionLog, getGoogleAuthUrl, getNotificationPreferences, sendTestNotification,
   setNotificationPreferences, updateTimezone,
 } from '../services/api';
+import { actionKind, actionSummary, statusLabel } from '../services/actionLog';
 import { browserIsSubscribed, disablePush, enablePush, pushSupported } from '../services/push';
 
 const FALLBACK_ZONES = [
@@ -50,6 +51,18 @@ export default function SettingsModal({ open, onClose, googleConnected, googleSe
   const [channels, setChannels] = useState(null);       // what the server says: { push, email, push_available, email_available }
   const [browserPush, setBrowserPush] = useState(false); // is *this* browser subscribed
   const [savingChannel, setSavingChannel] = useState(false);
+  const [activity, setActivity] = useState(null);       // the user's action log: null while loading, [] when empty, 'error'
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    setActivity(null);
+    fetchActionLog(15).then(
+      (rows) => { if (!cancelled) setActivity(rows); },
+      () => { if (!cancelled) setActivity('error'); },
+    );
+    return () => { cancelled = true; };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -254,6 +267,42 @@ export default function SettingsModal({ open, onClose, googleConnected, googleSe
                   className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80 hover:bg-white/10 cursor-pointer disabled:opacity-50">
                   Send a test notification
                 </button>
+              </div>
+            </section>
+
+            {/* Activity: what the assistant did on the user's behalf */}
+            <section className="mb-5">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-white/30 mb-2">Activity</p>
+              <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-3">
+                {activity === null && <p className="m-0 text-xs text-white/30">Loading…</p>}
+                {activity === 'error' && <p className="m-0 text-xs text-red-300/70">Could not load your activity.</p>}
+                {Array.isArray(activity) && activity.length === 0 && (
+                  <p className="m-0 text-xs text-white/30">Nothing yet. Emails, events, reminders and files the assistant handles for you are listed here, with when you approved them.</p>
+                )}
+                {Array.isArray(activity) && activity.length > 0 && (
+                  <ul className="list-none m-0 p-0 space-y-2.5 max-h-56 overflow-y-auto" aria-label="Activity log">
+                    {activity.map((row) => {
+                      const label = statusLabel(row.status);
+                      const tone = { good: 'text-emerald-400/80', bad: 'text-red-400/80', warn: 'text-amber-400/80', muted: 'text-white/40' }[label.tone];
+                      const when = row.executed_at || row.decided_at || row.proposed_at;
+                      return (
+                        <li key={row.action_id} className="text-sm text-white/70">
+                          <div className="flex items-center gap-2">
+                            <History className="w-3.5 h-3.5 shrink-0 text-white/30" />
+                            <span className="font-medium">{actionKind(row.action_type)}</span>
+                            <span className={`ml-auto text-xs ${tone}`}>{label.text}</span>
+                          </div>
+                          <p className="m-0 mt-0.5 ml-5 text-xs text-white/40 truncate">{actionSummary(row)}</p>
+                          <p className="m-0 ml-5 text-[11px] text-white/25">
+                            {when ? new Date(when).toLocaleString() : ''}
+                            {row.decided_at && row.status !== 'awaiting_approval' ? ` · decided ${new Date(row.decided_at).toLocaleTimeString()}` : ''}
+                          </p>
+                          {row.error && <p className="m-0 ml-5 text-[11px] text-red-300/60">{row.error}</p>}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
             </section>
 

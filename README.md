@@ -145,6 +145,23 @@ mini-RAG-APP/ (NexusAI Workspace)
 vector collection, tasks, reminders, time zone and background jobs. A project name sent by a client is only a
 name: the server scopes it to the signed-in user, so users cannot read or overwrite each other's data.
 
+## The audit log of approved actions
+
+Sending an email, creating a calendar event, saving a reminder and saving to Drive each need the user's approval, and
+each leaves entries in the `actions_log` collection: `proposed` (with a hash of exactly what will run), `approved` or
+`rejected` (who and when), `executing`, then `executed` (with the id Gmail, Calendar or Drive returned), `failed` or
+`unknown`. Users see their own log under **Settings > Activity**, and `GET /api/v1/actions/log` returns it.
+
+- Every action has one id (its idempotency key). Asking again with the same id never repeats the call: an executed
+  action returns its stored result.
+- If the process dies or times out after Gmail or Drive may have accepted a request but before the result was
+  recorded, the action is shown as **not confirmed** and is never retried automatically, because a duplicate email
+  cannot be taken back. Calendar events (created under an id made from the approval) and reminders (unique per
+  approval) are safe to repeat, so they are.
+- The log stores recipients, subjects, titles and ids, never message bodies or document text.
+- The application can only add and read entries. To make the log tamper-resistant against someone with database
+  access too, give the database user the application connects with no update or delete right on `actions_log`.
+
 ## Rotating the token encryption key
 
 Rotate when the key may have leaked, or on a schedule. Nobody is signed out and no one reconnects Google.

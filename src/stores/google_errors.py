@@ -16,6 +16,7 @@ def translate_google_error(exc: Exception, service: str) -> DomainError:
         error = GoogleAuthRequiredException(
             f"Google has not given this app access to {service} yet. Please reconnect your Google account and allow it.")
     else:
-        error = ExternalServiceError(f"{service} request failed ({status or type(exc).__name__}): {exc}", service=service)
+        error = ExternalServiceError(f"{service} request failed ({status or type(exc).__name__}): {exc}",
+                                     service=service, http_status=status or 0)
     error.__cause__ = exc
     return error

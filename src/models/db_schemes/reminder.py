@@ -20,6 +20,8 @@ class Reminder(BaseModel):
     delivered_at: Optional[datetime] = None
     # True when date/time could not be turned into a moment (so the scan stops looking at it).
     due_unparsed: bool = False
+    # The approved action that created it: a unique key, so saving the same approval twice stores one reminder.
+    action_id: Optional[str] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -36,6 +38,12 @@ class Reminder(BaseModel):
                 "key": [("is_completed", 1), ("date", 1)],
                 "name": "reminder_status_date_index",
                 "unique": False
+            },
+            {
+                "key": [("action_id", 1)],
+                "name": "reminder_action_id_index",
+                "unique": True,
+                "options": {"partialFilterExpression": {"action_id": {"$type": "string"}}}
             },
             {
                 # the due-reminder scan: undelivered, not completed, due before now

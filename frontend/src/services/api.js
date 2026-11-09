@@ -349,6 +349,12 @@ export async function markNotificationRead(id) {
   await request(`/api/v1/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', retries: 0 });
 }
 
+/** What the assistant proposed and did on the user's behalf: one row per action, newest first. */
+export async function fetchActionLog(limit = 20) {
+  const { actions } = await request(`/api/v1/actions/log?limit=${limit}`);
+  return actions;
+}
+
 /** Which optional channels (Web Push, email to yourself) are on, and which this server can offer. */
 export async function getNotificationPreferences() {
   return request('/api/v1/notifications/preferences');

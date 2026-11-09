@@ -8,6 +8,7 @@ import os
 from agent.deps import AgentDeps
 from agent.errors import fail
 from agent.google_clients import GOOGLE_CONNECT_MESSAGE, drive_for_request
+from agent.nodes.gated import execute_action, report
 from agent.state import AgentState
 from controllers.formatter import ResponseFormatter
 from controllers.llm_schemas import DrivePlan
@@ -119,47 +120,34 @@ async def drive_search_node(state: AgentState, deps: AgentDeps) -> AgentState:
 
 
 async def drive_save_node(state: AgentState, deps: AgentDeps) -> AgentState:
-    """Create a Google Doc or upload one of the user's files to Drive (runs only after the user approves)."""
+    """Create a Google Doc or upload one of the user's files to Drive (runs only after the user approves, at most once)."""
     details = state.get("action_details", {})
     operation = details.get("operation") or "create_document"
 
-    try:
+    async def run() -> dict:
         drive = await asyncio.to_thread(drive_for_request)
-    except GoogleAuthRequiredException as exc:
-        state["result"] = str(exc) if str(exc) and "No Google account" not in str(exc) else GOOGLE_CONNECT_MESSAGE
-        state["status"] = "error"
-        return state
-    except DomainError as exc:
-        return fail(state, exc)
-
-    try:
         if operation == "upload_file":
             path = resolve_project_file(state.get("user_id", ""), state.get("project_id", "default"), details.get("file_name", ""))
             if path is None:
-                state["result"] = ResponseFormatter.format_error(
-                    "I couldn't find that file among your uploads, so nothing was saved to Drive.")
-                state["status"] = "error"
-                return state
+                raise ValidationFailed("I couldn't find that file among your uploads, so nothing was saved to Drive.")
             data = await asyncio.to_thread(_read_bytes, path)
             name = os.path.basename(path)
             mime_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            result = await asyncio.to_thread(drive.upload_file, name, data, mime_type)
-        else:
-            if not (details.get("content") or "").strip():
-                state["result"] = ResponseFormatter.format_error(
-                    "I didn't have any text to put in the document, so nothing was created.")
-                state["status"] = "error"
-                return state
-            result = await asyncio.to_thread(
-                drive.create_document, details.get("title") or "Untitled note", details.get("content", ""))
-    except DomainError as exc:
-        return fail(state, exc)
+            return await asyncio.to_thread(drive.upload_file, name, data, mime_type)
+        if not (details.get("content") or "").strip():
+            raise ValidationFailed("I didn't have any text to put in the document, so nothing was created.")
+        return await asyncio.to_thread(
+            drive.create_document, details.get("title") or "Untitled note", details.get("content", ""))
 
-    state["result"] = ResponseFormatter.format_drive_saved(result, operation)
-    state["status"] = "success"
-    state["metadata"]["source"] = "drive_save"
-    state["metadata"]["file_id"] = result.get("file_id", "")
-    return state
+    outcome = await execute_action(state, deps, "drive_save", run, result_id_key="file_id")
+
+    def done(result: dict) -> None:
+        state["result"] = ResponseFormatter.format_drive_saved(result, operation)
+        state["status"] = "success"
+        state["metadata"]["source"] = "drive_save"
+        state["metadata"]["file_id"] = result.get("file_id", "")
+
+    return report(state, "drive_save", outcome, done)
 
 
 def _read_bytes(path: str) -> bytes:

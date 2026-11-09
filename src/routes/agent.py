@@ -16,7 +16,9 @@ from helpers.config import get_settings
 from helpers.services import services_of
 from helpers.event_bus import issue_ticket, redeem_ticket
 from helpers.auth_utils import get_current_user
+from models.ActionLogModel import ActionLogModel
 from models.NotificationModel import NotificationModel
+from services import actions as actions_service
 from models.UserModel import UserModel
 from helpers.error_handlers import public_message_for
 from helpers.google_context import set_google_token
@@ -114,8 +116,9 @@ async def _build_initial_state(request: Request, chat_request: ChatRequest, curr
     initial_state["chat_history"] = existing_history
     if existing_history and state_snapshot and state_snapshot.values:
         metadata = dict(state_snapshot.values.get("metadata", {}) or {})
-        # An approval token only ever belongs to the interrupt that created it.
-        metadata.pop("resume_token", None)
+        # An approval token and action id only ever belong to the interrupt that created them.
+        for key in ("resume_token", "action_id", "params_hash"):
+            metadata.pop(key, None)
         initial_state["metadata"] = metadata
 
     initial_state["user_email"] = current_user.get("email") or ""
@@ -146,12 +149,23 @@ async def _persist_refreshed_token(request: Request, current_user: dict, origina
         logger.warning(f"Could not persist refreshed Google token: {exc}")
 
 
-async def _new_resume_token(agent_graph, config: dict, values: dict) -> dict:
+async def _new_resume_token(agent_graph, config: dict, values: dict, extra: dict = None) -> dict:
     """Attach a fresh single-use approval token to the paused thread; returns the new metadata."""
     metadata = dict(values.get("metadata", {}) or {})
     metadata["resume_token"] = uuid.uuid4().hex
+    metadata.update(extra or {})
     await agent_graph.aupdate_state(config, {"metadata": metadata})
     return metadata
+
+
+async def _propose_action(request: Request, agent_graph, config: dict, current_user: dict, paused_node: str,
+                          values: dict) -> dict:
+    """The graph paused for approval: log the proposal (with a hash of exactly what will run), give the action its
+    id, and attach a fresh approval token. Returns the metadata the client needs to answer."""
+    proposal = await actions_service.propose(
+        ActionLogModel(services_of(request).mongo_db), str(current_user["_id"]), paused_node,
+        values.get("action_details", {}))
+    return await _new_resume_token(agent_graph, config, values, extra=proposal)
 
 
 agent_router = APIRouter(
@@ -199,7 +213,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest, current_use
         if state_snapshot.next:
             action_type = final_state.get("action_type", "")
             action_details = final_state.get("action_details", {})
-            metadata = await _new_resume_token(agent_graph, config, final_state)
+            metadata = await _propose_action(request, agent_graph, config, current_user, state_snapshot.next[0], final_state)
             return ChatResponse(
                 response=f"Pending approval to execute action: {action_type}",
                 type=f"action:{action_type}",
@@ -291,9 +305,14 @@ async def resume_endpoint(request: Request, resume_request: ResumeRequest, curre
                     }
                 )
 
+            # The user's answer goes on the record before anything runs: who decided, and when.
+            paused_node = state_snapshot.next[0]
+            await actions_service.record_decision(
+                ActionLogModel(services_of(request).mongo_db), str(current_user["_id"]),
+                (state_snapshot.values.get("metadata") or {}).get("action_id", ""), paused_node, resume_request.approve)
+
             if not resume_request.approve:
                 # User rejected the action, update state as the paused node to skip it
-                paused_node = state_snapshot.next[0]
 
                 # Manually append the rejection to chat history so the LLM knows it was cancelled
                 existing_history = list(state_snapshot.values.get("chat_history", []))
@@ -552,7 +571,7 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest, curr
                 final_vals = state.values
                 action_type = final_vals.get("action_type", "")
                 action_details = final_vals.get("action_details", {})
-                metadata = await _new_resume_token(agent_graph, config, final_vals)
+                metadata = await _propose_action(request, agent_graph, config, current_user, state.next[0], final_vals)
 
                 yield f"data: {json.dumps({'type': 'pending_action', 'action_type': action_type, 'action_details': action_details, 'metadata': metadata})}\n\n"
             else:

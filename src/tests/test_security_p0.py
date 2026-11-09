@@ -1,4 +1,5 @@
 """Regression tests for the P0 security fixes (see REFACTOR_PLAN.md section 1)."""
+import asyncio
 import sys
 import threading
 import time
@@ -39,13 +40,18 @@ def test_google_clients_are_never_shared_between_users(monkeypatch):
 
 
 def test_graph_nodes_refuse_to_act_without_the_users_own_token():
-    from agent import AgentDeps
+    from action_fakes import approve
     from agent.nodes import actions
     from helpers.google_context import set_google_token
 
     set_google_token(None)
     state = {"action_details": {"recipient": "x@example.com", "subject": "s", "body": "b"}, "metadata": {}}
-    result = actions.send_email_node(state, AgentDeps())
+
+    async def scenario():
+        deps, approved_state = await approve(state, "send_email", user_id="u1")
+        return await actions.send_email_node(approved_state, deps)
+
+    result = asyncio.run(scenario())
     assert result["status"] == "error"
     assert "connect your Google account" in result["result"]
 

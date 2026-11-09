@@ -26,6 +26,16 @@ class ReminderModel(BaseDataModel):
         reminder.id = result.inserted_id
         return reminder
 
+    async def create_for_action(self, reminder: Reminder):
+        """Save a reminder for an approved action. Saving the same action again returns the reminder already saved."""
+        from pymongo.errors import DuplicateKeyError
+
+        try:
+            return await self.create_reminder(reminder)
+        except DuplicateKeyError:
+            doc = await self.collection.find_one({"action_id": reminder.action_id})
+            return Reminder(**doc)
+
     async def get_active_reminders(self, project_id: str, user_id: str, limit: int = 20):
         cursor = self.collection.find(
             {"project_id": project_id, "user_id": user_id, "is_completed": False}
