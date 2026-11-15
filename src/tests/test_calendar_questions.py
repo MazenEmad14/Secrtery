@@ -140,3 +140,59 @@ def test_a_calendar_question_without_google_says_the_calendar_is_not_connected(m
     result = asyncio.run(retrieval_node.search_knowledge_base_node(state, deps))
     assert result["status"] == "error" and "calendar" in result["result"] and "Google" in result["result"]
     assert "No information found" not in result["result"]
+
+
+# ── Google connected: an empty calendar is an answer ───────────────────────
+
+def _ask_the_calendar(monkeypatch, query, events=None, error=None):
+    import asyncio
+
+    from agent import AgentDeps
+    from agent.nodes import retrieval as retrieval_node
+
+    class Calendar:
+        def list_events(self, max_results, days_ahead):
+            if error:
+                raise error
+            return events or []
+
+    monkeypatch.setattr(retrieval_node, "calendar_for_request", lambda: Calendar())
+
+    class EmptyIndex:
+        def search_by_vector(self, *a, **k):
+            return []
+
+        def is_collection_existed(self, name):
+            return False
+
+    class Embedder:
+        def embed_text(self, *a, **k):
+            return [0.0] * 4
+
+        async def aembed_text(self, *a, **k):
+            return [0.0] * 4
+
+    state = {"query": query, "user_id": "u1", "project_id": "default", "metadata": {}, "chat_history": [],
+             "request_type": "retrieval", "action_type": ""}
+    deps = AgentDeps(vectordb_client=EmptyIndex(), embedding_client=Embedder(), generation_client=None, db_client=None)
+    return asyncio.run(retrieval_node.search_knowledge_base_node(state, deps))
+
+
+def test_an_empty_calendar_is_answered_as_no_meetings_not_as_no_information(monkeypatch):
+    result = _ask_the_calendar(monkeypatch, "what meetings do I have today?")
+    assert result["status"] == "success" and result["metadata"]["source"] == "calendar"
+    assert "no meetings" in result["result"] and "7 days" in result["result"]
+    assert "No information found" not in result["result"]
+
+
+def test_an_empty_calendar_is_answered_in_arabic_for_an_arabic_question(monkeypatch):
+    result = _ask_the_calendar(monkeypatch, "عندي اجتماعات ايه بكرة؟")
+    assert result["status"] == "success" and "ليس لديك أي اجتماعات" in result["result"]
+
+
+def test_a_calendar_that_could_not_be_read_is_not_reported_as_empty(monkeypatch):
+    from helpers.exceptions import ExternalServiceError
+
+    result = _ask_the_calendar(monkeypatch, "what meetings do I have today?",
+                               error=ExternalServiceError("Calendar 500", service="Google Calendar", http_status=500))
+    assert result["status"] == "error" and "no meetings" not in result["result"].lower()

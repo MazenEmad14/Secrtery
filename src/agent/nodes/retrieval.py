@@ -20,6 +20,10 @@ import asyncio
 
 logger = logging.getLogger('uvicorn.error')
 
+CALENDAR_LOOKAHEAD_DAYS = 7
+NO_MEETINGS_EN = "📅 You have no meetings coming up. I checked your calendar for the next {days} days."
+NO_MEETINGS_AR = "📅 ليس لديك أي اجتماعات قادمة. راجعت تقويمك للأيام الـ {days} القادمة."
+
 
 async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> AgentState:
     """Answer from the user's documents, plus tasks/reminders/calendar when the question asks for them."""
@@ -90,6 +94,7 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
         return []
 
     calendar_not_connected: list = []   # filled when the question reached the calendar but Google is not connected
+    calendar_checked_empty: list = []   # filled when the calendar was read successfully and has nothing coming up
 
     async def _calendar_search() -> list:
         try:
@@ -105,8 +110,10 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
             events = await asyncio.to_thread(
                 calendar_service.list_events,
                 max_results=3,
-                days_ahead=7,
+                days_ahead=CALENDAR_LOOKAHEAD_DAYS,
             )
+            if not events:
+                calendar_checked_empty.append(True)
             return [{
                 "text": f"Calendar: {event.get('title', 'Event')} at {event.get('start', '')}",
                 "score": 0.9,
@@ -172,6 +179,14 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
                            "Connect it from Settings, then ask again.")
         state["status"] = "error"
         state["metadata"]["error_code"] = "google_auth_required"
+        return state
+    if not aggregated_results and calendar_checked_empty:
+        # The calendar was read and is empty: that IS the answer, not "no information found".
+        state["knowledge_results"] = []
+        arabic = any("؀" <= ch <= "ۿ" for ch in state["query"])
+        state["result"] = (NO_MEETINGS_AR if arabic else NO_MEETINGS_EN).format(days=CALENDAR_LOOKAHEAD_DAYS)
+        state["status"] = "success"
+        state["metadata"]["source"] = "calendar"
         return state
     if not aggregated_results:
         state["knowledge_results"] = []
