@@ -7,6 +7,29 @@ import logging
 
 logger = logging.getLogger('uvicorn.error')
 
+# Words that mean the user wants something created, changed or cancelled on the calendar.
+_CALENDAR_WRITE_WORDS = (
+    "book", "schedule", "create", "set up", "setup", "reserve", "cancel", "reschedule", "postpone", "move my",
+    "add a meeting", "add an event", "add event", "invite", "arrange", "put a meeting", "make a meeting",
+    "احجز", "حجز", "اعمل", "اعملي", "ضيف", "أضف", "اضف", "الغي", "إلغي", "ألغي", "أجل", "اجل", "رتب", "حدد",
+)
+# Words that make it a question about what is already there.
+_CALENDAR_READ_WORDS = (
+    "what", "which", "when", "do i have", "have i got", "am i free", "any meeting", "anything on", "how many",
+    "show", "list", "check", "tell me", "look at", "what's on", "whats on", "is there", "are there", "?", "؟",
+    "ايه", "إيه", "اي ", "أي ", "عندي", "امتى", "إمتى", "متى", "هل", "كام", "اعرض", "وريني", "فيه", "في اجتماع",
+)
+
+
+def is_calendar_question(query: str) -> bool:
+    """True when the query asks about the calendar ("what meetings do I have today?") and does not ask to change it.
+    A request with a writing word ("schedule a meeting, what time works?") is never treated as a question."""
+    lowered = (query or "").lower()
+    if any(word in lowered for word in _CALENDAR_WRITE_WORDS):
+        return False
+    return any(word in lowered for word in _CALENDAR_READ_WORDS)
+
+
 class ClassifierController(BaseController):
     """
     Uses LLM to classify user queries into:
@@ -25,6 +48,15 @@ class ClassifierController(BaseController):
         Classify a user query into request_type and action_type.
         Returns: {"request_type": "retrieval"|"action", "action_type": "send_email"|"calendar"|"reminder"|""}
         """
+        result = self._classify(query, chat_history, uploaded_documents)
+        if result.get("action_type") == "calendar" and is_calendar_question(query):
+            # "What meetings do I have today?" mentions meetings but asks to READ the calendar. Treated as "create an
+            # event" there is nothing to extract and the model refuses. Reading is the retrieval path's job.
+            logger.info("Calendar question, not a request to create an event: answering it from the calendar")
+            return {"request_type": "retrieval", "action_type": "", "priority": result.get("priority", "medium")}
+        return result
+
+    def _classify(self, query: str, chat_history: list = None, uploaded_documents: str = "") -> dict:
 
         system_prompt = render("classifier", "classify_system")
 

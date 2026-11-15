@@ -89,11 +89,14 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
             failed["tasks"] = exc
         return []
 
+    calendar_not_connected: list = []   # filled when the question reached the calendar but Google is not connected
+
     async def _calendar_search() -> list:
         try:
             calendar_service = await asyncio.to_thread(calendar_for_request)
         except GoogleAuthRequiredException:
-            return []  # no Google account: there is simply no calendar to search
+            calendar_not_connected.append(True)   # no calendar to search; said so if nothing else answers
+            return []
         except Exception as exc:
             logger.error(f"Calendar client setup failed: {exc}")
             failed["calendar"] = exc
@@ -113,6 +116,7 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
                 "date": event.get("start"),
             } for event in events]
         except GoogleAuthRequiredException:
+            calendar_not_connected.append(True)
             return []
         except Exception as exc:
             logger.error(f"Calendar search failed: {exc}")
@@ -161,6 +165,14 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
         reason = next((e for e in failed.values() if isinstance(e, DomainError)),
                       ExternalServiceError(f"Could not search {sorted(failed)}", service="search"))
         return fail(state, reason)
+    if not aggregated_results and calendar_not_connected:
+        # "What meetings do I have today?" with no Google account: say why there is nothing, not "no information found".
+        state["knowledge_results"] = []
+        state["result"] = ("I can't see your calendar yet because your Google account isn't connected. "
+                           "Connect it from Settings, then ask again.")
+        state["status"] = "error"
+        state["metadata"]["error_code"] = "google_auth_required"
+        return state
     if not aggregated_results:
         state["knowledge_results"] = []
         state["result"] = ResponseFormatter.format_no_results()

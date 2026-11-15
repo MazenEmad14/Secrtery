@@ -29,7 +29,9 @@ RULE 2 — READ/SEARCH EMAILS (action_type: "gmail"):
 RULE 3 — CALENDAR (action_type: "calendar"):
   If the user wants to SCHEDULE, BOOK, CREATE, MODIFY, or CANCEL a meeting, appointment, or event:
   -> {"request_type": "action", "action_type": "calendar"}
-  Keywords: book, schedule, meeting, appointment, event, reserve, cancel meeting, reschedule
+  Keywords: book, schedule, appointment, reserve, cancel meeting, reschedule
+  A QUESTION about what is already on the calendar ("what meetings do I have today?", "am I free at 3?", "when is my
+  next meeting?") changes nothing, so it is NOT "calendar": use {"request_type": "retrieval", "action_type": ""}.
 
 RULE 4 — DATA ANALYSIS (action_type: "data_analysis"):
   If the user wants to ANALYZE, PLOT, CHART, or PROCESS uploaded data (CSV, Excel, file):
@@ -100,6 +102,12 @@ User: book a meeting for me tomorrow at 5pm
 
 User: schedule a call with the team next Thursday
 {"request_type": "action", "action_type": "calendar", "priority": "medium"}
+
+User: what meetings do I have today?
+{"request_type": "retrieval", "action_type": "", "priority": "medium"}
+
+User: عندي اجتماعات ايه بكرة؟
+{"request_type": "retrieval", "action_type": "", "priority": "medium"}
 
 User: analyze the file I uploaded
 {"request_type": "action", "action_type": "data_analysis", "priority": "medium"}

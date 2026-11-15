@@ -47,6 +47,9 @@ class LLMUnavailable(DomainError):
             return "The AI service is busy right now. Please try again in a moment."
         if self.reason == "timeout":
             return "The AI model took too long to answer. Please try again."
+        if self.reason == "unusable_output":
+            return ("I couldn't turn that into something I can do. Please say it a little differently, for example "
+                    "\"schedule a meeting with Sara tomorrow at 3pm\".")
         return self.default_message
 
     @classmethod
@@ -62,6 +65,8 @@ class LLMUnavailable(DomainError):
             reason = "auth"
         elif status == 404 or "notfound" in name:
             reason = "model_not_found"
+        elif status == 400 and "json_validate_failed" in str(exc):
+            reason = "unusable_output"   # the model could not produce what was asked (it refused or went off track)
         elif "timeout" in name:
             reason = "timeout"
         elif "connection" in name or isinstance(exc, (ConnectionError, OSError)):
