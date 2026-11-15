@@ -60,12 +60,21 @@ class FakeFlow:
             raise RuntimeError("invalid_grant")
 
 
+VERIFY_CALLS: list = []   # the clock tolerance each Google token check was made with
+
+
 @pytest.fixture
 def identity(monkeypatch):
     """What Google says about the person: edit the dict in a test to change the verified identity."""
     claims = {"email": "Sara@Example.com", "email_verified": True, "sub": "google-sub-1", "name": "Sara Ahmed"}
     monkeypatch.setattr(auth_routes, "_new_flow", lambda scopes=None: FakeFlow(scopes or auth_routes.SCOPES))
-    monkeypatch.setattr("google.oauth2.id_token.verify_oauth2_token", lambda token, request, audience: dict(claims))
+    VERIFY_CALLS.clear()
+
+    def verify(token, request, audience, clock_skew_in_seconds=0):
+        VERIFY_CALLS.append(clock_skew_in_seconds)      # how the token was checked: with how much clock tolerance
+        return dict(claims)
+
+    monkeypatch.setattr("google.oauth2.id_token.verify_oauth2_token", verify)
     monkeypatch.setattr(auth_routes.CREDENTIALS_PATH.__class__, "exists", lambda self: True)
     FakeFlow.fail_exchange = False
     return claims
@@ -108,6 +117,45 @@ def finish(client, state, **extra):
 
 def users(client):
     return client.portal.call(lambda: client.db().users.find({}).to_list(None))
+
+
+@needs_mongo
+def test_the_google_token_is_checked_with_a_small_clock_tolerance(client):
+    """Real failure: Google's token was stamped one second ahead of this computer's clock and sign-in failed with
+    "Token used too early". A few seconds of difference between two clocks is normal and must not block sign-in."""
+    auth_routes._pending_logins.clear()
+    assert finish(client, begin(client)).headers["location"] == f"{FRONTEND}/workspace"
+    assert VERIFY_CALLS == [auth_routes.GOOGLE_CLOCK_SKEW_SECONDS] and 5 <= VERIFY_CALLS[0] <= 30
+
+
+def test_google_accepts_a_token_issued_a_second_in_the_future_only_with_the_tolerance():
+    """The real library, on a real signed token: not a stand-in. Without the tolerance this is the exact error from the
+    log; with it the token is accepted, and one an hour ahead (a really wrong clock) is still refused."""
+    import time
+
+    import google.auth.crypt
+    import google.auth.jwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from google.auth import exceptions as google_exceptions
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    signer = google.auth.crypt.RSASigner.from_string(pem, "key-1")
+    certs = {"key-1": key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()}
+
+    def token(issued_in_seconds):
+        now = int(time.time()) + issued_in_seconds
+        return google.auth.jwt.encode(signer, {"iat": now, "exp": now + 3600, "aud": "client", "sub": "1"}, key_id="key-1")
+
+    def decode(raw, skew):
+        return google.auth.jwt.decode(raw, certs=certs, audience="client", clock_skew_in_seconds=skew)
+
+    with pytest.raises(google_exceptions.InvalidValue, match="Token used too early"):
+        decode(token(1), 0)                                                # what the log showed
+    assert decode(token(1), auth_routes.GOOGLE_CLOCK_SKEW_SECONDS)["sub"] == "1"
+    with pytest.raises(google_exceptions.InvalidValue):
+        decode(token(3600), auth_routes.GOOGLE_CLOCK_SKEW_SECONDS)         # a clock an hour wrong is still refused
 
 
 @needs_mongo

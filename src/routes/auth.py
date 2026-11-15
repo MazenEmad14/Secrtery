@@ -94,6 +94,12 @@ async def google_signin(request: Request, origin: str = None):
     return JSONResponse(content={"auth_url": _start_flow("signin", SIGN_IN_SCOPES, origin)})
 
 
+# Google stamps the identity token with its own clock. A computer whose clock is even one second behind Google's would
+# reject a token issued "in the future" ("Token used too early") and every sign-in would fail, so a small difference is
+# tolerated. This does not weaken the check: the token's signature, issuer, audience and expiry are still verified.
+GOOGLE_CLOCK_SKEW_SECONDS = 10
+
+
 def _back_to_login(pending: dict, reason: str) -> RedirectResponse:
     """Send the browser back to the sign-in page with a reason it can explain (never a raw error page)."""
     frontend = (pending or {}).get("origin") or get_settings().FRONTEND_URL
@@ -107,7 +113,8 @@ async def _sign_in_with_google(request: Request, pending: dict, flow, token_dict
 
     try:
         claims = google_id_token.verify_oauth2_token(
-            flow.credentials.id_token, GoogleRequest(), flow.client_config["client_id"])
+            flow.credentials.id_token, GoogleRequest(), flow.client_config["client_id"],
+            clock_skew_in_seconds=GOOGLE_CLOCK_SKEW_SECONDS)
     except Exception:
         logger.error("Could not verify the Google identity token", exc_info=True)
         return _back_to_login(pending, "failed")
