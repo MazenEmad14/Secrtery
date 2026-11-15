@@ -303,3 +303,23 @@ def test_unread_notifications_wait_for_a_user_who_was_offline():
         assert await NotificationModel(db).list_for_user("bob", unread_only=True) == []
 
     run_with_db(scenario)
+
+
+@needs_mongo
+def test_active_reminders_include_reminders_saved_without_an_is_completed_field_and_exclude_completed_ones():
+    """The daily summary and chat questions about reminders read this list. ReminderModel stores only the fields that
+    were set, so a saved reminder has no `is_completed`: a filter on `== False` showed an empty list."""
+    async def scenario(db):
+        from models.ReminderModel import ReminderModel
+        from models.db_schemes import Reminder
+
+        model = ReminderModel(db)
+        first = await model.create_reminder(Reminder(task="open one", user_id="alice", project_id="default"))
+        await model.create_reminder(Reminder(task="open two", user_id="alice", project_id="default"))
+        await model.create_reminder(Reminder(task="someone else's", user_id="bob", project_id="default"))
+        done = await model.create_reminder(Reminder(task="finished", user_id="alice", project_id="default"))
+        await model.mark_completed(done.id, "alice")
+        active = await model.get_active_reminders("default", "alice")
+        assert sorted(r.task for r in active) == ["open one", "open two"] and first.id in [r.id for r in active]
+
+    run_with_db(scenario)
