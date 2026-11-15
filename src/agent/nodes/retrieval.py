@@ -8,6 +8,7 @@ from helpers.llm_json import llm_json
 from agent.google_clients import calendar_for_request
 from agent.state import AgentState
 from controllers.NLPController import NLPController
+from controllers.classifier import is_calendar_question
 from controllers.formatter import ResponseFormatter
 from helpers.exceptions import GoogleAuthRequiredException
 from helpers.project_scope import scoped_project_id
@@ -23,6 +24,14 @@ logger = logging.getLogger('uvicorn.error')
 CALENDAR_LOOKAHEAD_DAYS = 7
 NO_MEETINGS_EN = "📅 You have no meetings coming up. I checked your calendar for the next {days} days."
 NO_MEETINGS_AR = "📅 ليس لديك أي اجتماعات قادمة. راجعت تقويمك للأيام الـ {days} القادمة."
+
+
+def _say_no_meetings(state: AgentState) -> AgentState:
+    arabic = any("؀" <= ch <= "ۿ" for ch in state["query"])
+    state["result"] = (NO_MEETINGS_AR if arabic else NO_MEETINGS_EN).format(days=CALENDAR_LOOKAHEAD_DAYS)
+    state["status"] = "success"
+    state["metadata"]["source"] = "calendar"
+    return state
 
 
 async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> AgentState:
@@ -183,11 +192,7 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
     if not aggregated_results and calendar_checked_empty:
         # The calendar was read and is empty: that IS the answer, not "no information found".
         state["knowledge_results"] = []
-        arabic = any("؀" <= ch <= "ۿ" for ch in state["query"])
-        state["result"] = (NO_MEETINGS_AR if arabic else NO_MEETINGS_EN).format(days=CALENDAR_LOOKAHEAD_DAYS)
-        state["status"] = "success"
-        state["metadata"]["source"] = "calendar"
-        return state
+        return _say_no_meetings(state)
     if not aggregated_results:
         state["knowledge_results"] = []
         state["result"] = ResponseFormatter.format_no_results()
@@ -223,6 +228,11 @@ async def search_knowledge_base_node(state: AgentState, deps: AgentDeps) -> Agen
     if answer is None:
         # No LLM answer available: fall back to the best matching passage.
         answer = KBAnswer(found=True, answer=ranked_results[0].get("text", ""))
+
+    if (not answer.found or not answer.answer.strip()) and calendar_checked_empty and is_calendar_question(state["query"])             and not any(item.get("source") == "calendar" for item in ranked_results):
+        # The knowledge base returned loosely related passages and the model rightly found no answer in them, but the
+        # question was about the calendar, and the calendar is empty: say so.
+        return _say_no_meetings(state)
 
     if not answer.found or not answer.answer.strip():
         state["result"] = ResponseFormatter.format_no_results()

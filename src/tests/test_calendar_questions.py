@@ -196,3 +196,49 @@ def test_a_calendar_that_could_not_be_read_is_not_reported_as_empty(monkeypatch)
     result = _ask_the_calendar(monkeypatch, "what meetings do I have today?",
                                error=ExternalServiceError("Calendar 500", service="Google Calendar", http_status=500))
     assert result["status"] == "error" and "no meetings" not in result["result"].lower()
+
+
+def test_an_empty_calendar_is_still_no_meetings_when_the_knowledge_base_returns_unrelated_passages(monkeypatch):
+    """Real case: the user has uploaded documents, so the knowledge base always returns its nearest passages, and the
+    model rightly says they do not answer a question about meetings. That must not become "no information found"."""
+    import asyncio
+
+    from agent import AgentDeps
+    from agent.nodes import retrieval as retrieval_node
+
+    class Calendar:
+        def list_events(self, max_results, days_ahead):
+            return []
+
+    monkeypatch.setattr(retrieval_node, "calendar_for_request", lambda: Calendar())
+
+    class Model:
+        """Says the context (the handbook passages) does not answer the question."""
+        async def agenerate_text(self, prompt, **kwargs):
+            return '{"found": false, "answer": ""}'
+
+    class Index:
+        def is_collection_existed(self, name):
+            return True
+
+        def search_by_vector(self, *a, **k):
+            return []
+
+    class Embedder:
+        def embed_text(self, *a, **k):
+            return [0.0] * 4
+
+        async def aembed_text(self, *a, **k):
+            return [0.0] * 4
+
+    # The knowledge-base search is the node's inner function; make the controller return the unrelated passage.
+    from controllers.NLPController import NLPController
+
+    monkeypatch.setattr(NLPController, "search_vector_db_collection",
+                        lambda self, project, text, limit=10: [type("Doc", (), {"text": "Office hours are 9am to 5pm.", "score": 0.4})()])
+    state = {"query": "what meetings do I have today?", "user_id": "u1", "project_id": "default", "metadata": {},
+             "chat_history": [], "request_type": "retrieval", "action_type": ""}
+    deps = AgentDeps(vectordb_client=Index(), embedding_client=Embedder(), generation_client=Model(), db_client=None)
+    result = asyncio.run(retrieval_node.search_knowledge_base_node(state, deps))
+    assert result["metadata"].get("sources_searched") == ["knowledge_base", "calendar"]
+    assert result["status"] == "success" and "no meetings" in result["result"], result["result"]
